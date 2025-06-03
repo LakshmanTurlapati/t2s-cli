@@ -1,0 +1,2 @@
+[console_scripts]
+t2s = t2s.cli:main
