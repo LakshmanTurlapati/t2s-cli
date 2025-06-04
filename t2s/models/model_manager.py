@@ -1399,10 +1399,60 @@ class ModelManager:
                     # Set CUDA_LAUNCH_BLOCKING for better error reporting
                     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
                     
-                    response = self.current_pipeline(
-                        full_prompt,
-                        **generation_params
-                    )
+                    # Pre-tokenize with our validation to ensure consistency
+                    if hasattr(self.current_pipeline, 'tokenizer'):
+                        try:
+                            # Force consistent tokenization before pipeline
+                            pipeline_inputs = self.current_pipeline.tokenizer(
+                                full_prompt,
+                                return_tensors="pt",
+                                padding=True,
+                                truncation=True,
+                                max_length=4096
+                            )
+                            
+                            # Apply our validation and fixing
+                            pipeline_inputs = self._validate_input_tensors(pipeline_inputs)
+                            
+                            # Ensure tensors are on the right device
+                            if self.current_pipeline.device != -1:  # GPU
+                                pipeline_inputs = self._safe_to_device(pipeline_inputs, torch.device(f"cuda:{self.current_pipeline.device}"))
+                            
+                            self.console.print(f"[green]Pipeline input shapes: input_ids={pipeline_inputs['input_ids'].shape}, attention_mask={pipeline_inputs.get('attention_mask', 'None')}[/green]")
+                            
+                            # Use the model directly with our validated inputs instead of pipeline
+                            with torch.no_grad():
+                                generated_ids = self.current_pipeline.model.generate(
+                                    **pipeline_inputs,
+                                    **generation_params
+                                )
+                                
+                                # Decode using the tokenizer
+                                generated_text = self.current_pipeline.tokenizer.decode(
+                                    generated_ids[0],
+                                    skip_special_tokens=True
+                                )
+                                
+                                # Remove the original prompt
+                                if full_prompt in generated_text:
+                                    generated_text = generated_text.replace(full_prompt, "").strip()
+                                
+                                # Create response in pipeline format
+                                response = [{"generated_text": generated_text}]
+                        
+                        except Exception as direct_error:
+                            self.console.print(f"[yellow]Direct model approach failed, trying pipeline: {direct_error}[/yellow]")
+                            # Fallback to original pipeline approach
+                            response = self.current_pipeline(
+                                full_prompt,
+                                **generation_params
+                            )
+                    else:
+                        # No tokenizer available, use pipeline directly
+                        response = self.current_pipeline(
+                            full_prompt,
+                            **generation_params
+                        )
                     
                 except RuntimeError as e:
                     if "device-side assert" in str(e) or "CUDA error" in str(e) or "index out of bounds" in str(e):
