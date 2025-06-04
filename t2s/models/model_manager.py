@@ -222,8 +222,7 @@ class ModelManager:
                             device="cpu" if self._is_windows_system() and self.device == "cuda" else self.device,  # Windows fallback
                             torch_dtype=torch.float32 if self._is_windows_system() else model_kwargs.get("torch_dtype", torch.bfloat16),
                             model_kwargs={
-                                "attn_implementation": "eager",  # More stable on Windows
-                                "trust_remote_code": True
+                                "attn_implementation": "eager"  # More stable on Windows, removed trust_remote_code to avoid duplicate parameter
                             },
                             cache_dir=str(model_path)
                         )
@@ -263,12 +262,13 @@ class ModelManager:
                             
                             # Try CPU-only approach on Windows
                             try:
+                                # Force CPU mode for Windows
                                 test_pipeline = pipeline(
                                     "image-text-to-text",
                                     model=model_config.hf_model_id,
                                     device="cpu",
                                     torch_dtype=torch.float32,
-                                    model_kwargs={"trust_remote_code": True},
+                                    model_kwargs={"attn_implementation": "eager"},  # Removed trust_remote_code to avoid duplicate parameter
                                     cache_dir=str(model_path)
                                 )
                                 
@@ -701,8 +701,7 @@ class ModelManager:
                                 device=device,
                                 torch_dtype=dtype,
                                 model_kwargs={
-                                    "attn_implementation": "eager",  # More stable, especially on Windows
-                                    "trust_remote_code": True
+                                    "attn_implementation": "eager"  # More stable, especially on Windows, removed trust_remote_code to avoid duplicate parameter
                                 }
                             )
                             
@@ -726,7 +725,8 @@ class ModelManager:
                                         model=str(model_path),
                                         device="cpu",
                                         torch_dtype=torch.float32,
-                                        model_kwargs={"trust_remote_code": True}
+                                        model_kwargs={"attn_implementation": "eager"},  # Removed trust_remote_code to avoid duplicate parameter
+                                        cache_dir=str(model_path)
                                     )
                                     
                                     self.current_processor = self.current_pipeline.tokenizer if hasattr(self.current_pipeline, 'tokenizer') else self.current_pipeline.image_processor

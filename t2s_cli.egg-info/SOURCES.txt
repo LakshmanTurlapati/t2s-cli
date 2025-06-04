@@ -21,3 +21,4 @@ t2s_cli.egg-info/dependency_links.txt
 t2s_cli.egg-info/entry_points.txt
 t2s_cli.egg-info/requires.txt
 t2s_cli.egg-info/top_level.txt
+tests/test_basic.py

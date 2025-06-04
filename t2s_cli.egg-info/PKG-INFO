@@ -1,8 +1,9 @@
 Metadata-Version: 2.4
 Name: t2s-cli
-Version: 0.1.0
+Version: 0.1.2
 Summary: Terminal-based Text-to-SQL converter with AI model integration
-Author-email: Lakshman Turlapati <lakshmanturlapati@gmail.com>
+Author: Lakshman Turlapati
+Author-email: lakshmanturlapati@gmail.com
 License: MIT
 Project-URL: Homepage, https://github.com/lakshmanturlapati/t2s-cli
 Project-URL: Repository, https://github.com/lakshmanturlapati/t2s-cli
@@ -14,117 +15,170 @@ Classifier: Intended Audience :: Developers
 Classifier: License :: OSI Approved :: MIT License
 Classifier: Operating System :: OS Independent
 Classifier: Programming Language :: Python :: 3
-Classifier: Programming Language :: Python :: 3.8
 Classifier: Programming Language :: Python :: 3.9
 Classifier: Programming Language :: Python :: 3.10
 Classifier: Programming Language :: Python :: 3.11
 Classifier: Programming Language :: Python :: 3.12
 Classifier: Topic :: Database
 Classifier: Topic :: Software Development :: Libraries :: Python Modules
-Requires-Python: >=3.8
+Requires-Python: >=3.9
 Description-Content-Type: text/markdown
 License-File: LICENSE
-Requires-Dist: click>=8.0.0
-Requires-Dist: rich>=13.0.0
-Requires-Dist: transformers>=4.30.0
 Requires-Dist: torch>=2.0.0
-Requires-Dist: huggingface-hub>=0.16.0
+Requires-Dist: transformers>=4.40.0
+Requires-Dist: accelerate>=0.25.0
+Requires-Dist: huggingface-hub>=0.20.0
+Requires-Dist: datasets>=2.16.0
+Requires-Dist: tokenizers>=0.15.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: click>=8.1.0
+Requires-Dist: questionary>=2.0.0
+Requires-Dist: art>=6.0
+Requires-Dist: tabulate>=0.9.0
+Requires-Dist: pandas>=2.0.0
+Requires-Dist: sqlalchemy>=2.0.0
 Requires-Dist: sqlparse>=0.4.0
 Requires-Dist: psycopg2-binary>=2.9.0
 Requires-Dist: pymysql>=1.0.0
-Requires-Dist: sqlalchemy>=2.0.0
-Requires-Dist: pydantic>=2.0.0
 Requires-Dist: python-dotenv>=1.0.0
-Requires-Dist: requests>=2.28.0
-Requires-Dist: tqdm>=4.64.0
-Requires-Dist: colorama>=0.4.6
-Requires-Dist: art>=5.8
-Requires-Dist: questionary>=1.10.0
-Requires-Dist: tabulate>=0.9.0
-Requires-Dist: pandas>=1.5.0
-Requires-Dist: numpy>=1.24.0
-Requires-Dist: psutil>=5.9.0
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: pillow>=9.0.0
+Provides-Extra: gemma
+Requires-Dist: sentencepiece>=0.1.99; extra == "gemma"
+Provides-Extra: test
+Requires-Dist: pytest>=7.0.0; extra == "test"
+Requires-Dist: pytest-cov>=4.0.0; extra == "test"
+Requires-Dist: pytest-mock>=3.10.0; extra == "test"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "test"
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
+Requires-Dist: pytest-mock>=3.10.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "dev"
 Requires-Dist: black>=23.0.0; extra == "dev"
+Requires-Dist: isort>=5.12.0; extra == "dev"
 Requires-Dist: flake8>=6.0.0; extra == "dev"
-Requires-Dist: mypy>=1.0.0; extra == "dev"
+Requires-Dist: mypy>=1.4.0; extra == "dev"
 Requires-Dist: pre-commit>=3.0.0; extra == "dev"
+Requires-Dist: build>=0.10.0; extra == "dev"
+Requires-Dist: twine>=4.0.0; extra == "dev"
+Provides-Extra: all
+Requires-Dist: sentencepiece>=0.1.99; extra == "all"
+Requires-Dist: pytest>=7.0.0; extra == "all"
+Requires-Dist: pytest-cov>=4.0.0; extra == "all"
+Requires-Dist: pytest-mock>=3.10.0; extra == "all"
+Requires-Dist: pytest-asyncio>=0.21.0; extra == "all"
 Dynamic: license-file
+
 
 # T2S - Text to SQL CLI
 
-[![PyPI version](https://badge.fury.io/py/t2s-cli.svg)](https://badge.fury.io/py/t2s-cli)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+![PyPI version](https://badge.fury.io/py/t2s-cli.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
 
-A powerful terminal-based Text-to-SQL converter that uses AI models to transform natural language queries into SQL statements and execute them against your local databases.
+A powerful, privacy-first terminal-based Text-to-SQL converter that transforms natural language queries into SQL statements using state-of-the-art AI models—all running locally on your machine. Because your database deserves the best, and so does your privacy.
 
-**Created by Lakshman Turlapati**
+Created by Lakshman Turlapati
+
+## Privacy & Security First
+
+Your data stays where it belongs—on your machine. T2S operates entirely locally, free from external APIs, delivering uncompromised privacy and security. Ideal for sensitive enterprise databases and personal projects alike.
 
 ## Features
 
-🚀 **AI-Powered SQL Generation**
-- Support for multiple state-of-the-art models (Gemma 3, Llama 3, SmallLM, Defog SQLCoder)
-- Intelligent schema analysis and compression
-- Automatic SQL query validation and correction
+T2S is packed with capabilities to streamline your database querying experience:
 
-🎯 **Smart Database Integration**
-- Auto-detection of local databases (SQLite, PostgreSQL, MySQL)
-- Intelligent schema selection based on query context
-- Real-time query execution and results display
+### Advanced AI Workflows
+* Multiple specialized AI workflows tailored to diverse use cases
+* Intelligent model selection based on your hardware and accuracy requirements
+* Automatic schema analysis and query optimization
+* Support for complex multi-table joins and aggregations
 
-🎨 **Beautiful Terminal Interface**
-- ASCII art branding
-- Rich formatting and syntax highlighting
-- Interactive configuration menu
-- Progress bars and status indicators
+### Smart Database Integration
+* Auto-detection of local databases (SQLite, PostgreSQL, MySQL)
+* Real-time schema analysis and intelligent table selection
+* Query validation and automatic error correction
+* Elegant result visualization in the terminal
 
-🔧 **Model Management**
-- Automatic model downloading from HuggingFace
-- Optional HuggingFace OAuth integration
-- Local model storage and management
-- Easy model switching and deletion
+### Beautiful Terminal Experience
+* Rich ASCII art branding paired with an intuitive interface
+* Interactive configuration with memory compatibility warnings
+* Real-time loading animations and progress indicators
+* Syntax highlighting for SQL queries and results
 
-🌍 **Cross-Platform Support**
-- Compatible with macOS, Windows, and Linux
-- Support for both ARM and x86 architectures
-- Auto-detection of system capabilities
+### Enterprise-Ready
+* Fully offline operation—no internet required post-setup
+* Local model storage and management
+* Cross-platform support (macOS, Windows, Linux)
+* Memory-aware model recommendations
+
+## AI Model Recommendations
+
+Choosing the right AI model is key to unlocking T2S’s full potential. Here’s how to pick one that fits your needs:
+
+### For Best Results (95%+ Accuracy)
+* **Gemma 3 (12B)** - Ideal for production environments and complex queries
+* **Defog SQLCoder (7B)** - A specialized SQL model, perfect for technical users
+
+### For Most Users (80-90% Accuracy)
+* **Gemma 3 (4B)** - Recommended for 95% of users, striking a balance between accuracy and performance
+    * Runs efficiently on most modern hardware with impressive results
+
+### For Experimentation (40-60% Accuracy)
+* **SmolVLM (500M)** - Ultra-lightweight and runs on any computer
+    * Great for learning, testing, and resource-limited setups
+
+T2S includes memory compatibility warnings to guide you toward the best model for your system.
 
 ## Installation
 
-### From PyPI (Recommended)
+### Quick Start
+```bash
+pip install t2s-cli
+````
+
+### For Gemma Model Support
+
+Some models require additional dependencies:
 
 ```bash
+# Option 1: Install with Gemma support
+pip install t2s-cli[gemma]
+
+# Option 2: For all features
+pip install t2s-cli[all]
+```
+
+### macOS Users (if needed)
+
+```bash
+# If SentencePiece build issues arise
+brew install sentencepiece protobuf
 pip install t2s-cli
 ```
 
-### From Source
+## Getting Started
+
+### Launch T2S
 
 ```bash
-git clone https://github.com/lakshmanturlapati/t2s-cli.git
-cd t2s-cli
-pip install -e .
+t2s
 ```
 
-## Quick Start
+### First-Time Setup (Interactive Wizard)
 
-1. **Launch T2S**
-   ```bash
-   t2s
-   ```
+1.  Select an AI model based on your needs and system capabilities
+2.  Connect to your databases (SQLite, PostgreSQL, MySQL)
+3.  Download your chosen model (handled automatically)
 
-2. **First-time Setup**
-   - Configure your AI model preferences
-   - Set up database connections
-   - Download your preferred AI model
+### Start Querying
 
-3. **Start Querying**
-   ```bash
-   t2s query "Show me all users who registered last month"
-   ```
+```bash
+t2s query "Show me all customers who ordered in the last month"
+```
 
-## Usage
+## Usage Examples
 
 ### Interactive Mode
 
@@ -132,76 +186,85 @@ pip install -e .
 t2s
 ```
 
-Launch the interactive terminal interface with full features.
+Launches an interactive experience with model management, database configuration, and query execution.
 
 ### Direct Query Mode
 
 ```bash
-t2s query "Find all products with price greater than 100"
+t2s query "Find top 5 products by revenue this year"
 ```
 
-### Configuration
+### Configuration Management
 
 ```bash
-t2s config
+t2s config    # Full configuration menu
+t2s models    # Manage AI models
+t2s databases # Manage database connections
 ```
-
-Access the configuration menu to:
-- Select and download AI models
-- Configure database connections
-- Manage HuggingFace authentication
-- Delete unused models
-
-### Help
-
-```bash
-t2s --help
-```
-
-## Supported AI Models
-
-- **Gemma 3 (4B)** - Fast and efficient for simple queries
-- **Gemma 3 (12B)** - More accurate for complex queries
-- **Llama 3 (4B)** - Balanced performance and accuracy
-- **SmallLM (1.7B)** - Lightweight option for basic queries
-- **Defog SQLCoder (7B)** - Specialized for SQL generation
 
 ## Supported Databases
 
-- SQLite
-- PostgreSQL
-- MySQL
-- More coming soon!
+  * SQLite - Perfect for local development and small projects
+  * PostgreSQL - Enterprise-grade relational database
+  * MySQL - Popular choice for web applications
 
-## Examples
+More database support on the way\!
 
-### Basic Query
-```
-Input: "Show me all customers from New York"
-Generated SQL: SELECT * FROM customers WHERE city = 'New York';
+## Real-World Examples
+
+### Basic Queries
+
+**Input:** "Show me all active users"
+**Output:**
+
+```sql
+SELECT * FROM users WHERE status = 'active';
 ```
 
-### Complex Query
+**Input:** "Count orders by month"
+**Output:**
+
+```sql
+SELECT DATE_FORMAT(created_at, '%Y-%m') as month, COUNT(*)
+FROM orders GROUP BY month ORDER BY month;
 ```
-Input: "Find the top 5 products by revenue last quarter"
-Generated SQL: 
-SELECT p.name, SUM(oi.quantity * oi.price) as revenue
-FROM products p
-JOIN order_items oi ON p.id = oi.product_id
-JOIN orders o ON oi.order_id = o.id
+
+### Complex Queries
+
+**Input:** "Find customers who spent more than $1000 last quarter"
+**Output:**
+
+```sql
+SELECT c.name, c.email, SUM(o.total) as total_spent
+FROM customers c
+JOIN orders o ON c.id = o.customer_id
 WHERE o.created_at >= DATE_SUB(NOW(), INTERVAL 3 MONTH)
-GROUP BY p.id, p.name
-ORDER BY revenue DESC
-LIMIT 5;
+GROUP BY c.id, c.name, c.email
+HAVING total_spent > 1000
+ORDER BY total_spent DESC;
 ```
 
-## Development
+## Who Is This For?
+
+T2S caters to a broad audience:
+
+  * **Database Administrators** - Swiftly explore and analyze database contents
+  * **Developers** - Prototype and query databases during development
+  * **Data Analysts** - Turn business questions into SQL without syntax struggles
+  * **Students & Researchers** - Learn SQL and experiment with AI models locally
+  * **Privacy-Conscious Users** - Handle sensitive data without external exposure
+
+## Development & Contributing
+
+Contributions are welcome\! This project reflects significant effort and meticulous care.
 
 ### Setup Development Environment
 
 ```bash
-git clone https://github.com/lakshmanturlapati/t2s-cli.git
+git clone [https://github.com/lakshmanturlapati/t2s-cli.git](https://github.com/lakshmanturlapati/t2s-cli.git)
 cd t2s-cli
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -e ".[dev]"
 ```
 
@@ -211,29 +274,47 @@ pip install -e ".[dev]"
 pytest
 ```
 
-### Code Formatting
+### Code Quality
 
 ```bash
 black .
 flake8 .
 ```
 
-## Contributing
+## Roadmap
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+  * Support for additional databases (Oracle, SQL Server)
+  * Natural language explanations for results
+  * Query history and favorites
+  * Custom model fine-tuning
+  * Integration with popular BI tools
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Author
-
-**Lakshman Tirulapati**
-
-- GitHub: [@lakshmanturlapati](https://github.com/lakshmanturlapati)
-- Project Repository: [t2s-cli](https://github.com/lakshmanturlapati/t2s-cli)
+This project is licensed under the MIT License—see the `LICENSE` file for details.
 
 ## Acknowledgments
 
-- HuggingFace for providing the model infrastructure
-- The open-source community for the excellent libraries used in this project 
+Developed with support and guidance from the University of Texas at Dallas.
+
+### Special Thanks:
+
+  * Professor Srikanth Kannan - For invaluable guidance and inspiration
+  * The open-source community for essential libraries
+  * HuggingFace for model infrastructure
+  * Contributors and users who help refine T2S
+
+## Author
+
+**Lakshman Turlapati**
+
+  * GitHub: [@lakshmanturlapati](https://www.google.com/search?q=https://github.com/lakshmanturlapati)
+  * Project Repository: [t2s-cli](https://www.google.com/search?q=https://github.com/lakshmanturlapati/t2s-cli)
+  * Portfolio: [https://www.audienclature.com](https://www.audienclature.com)
+  * LinkedIn: [https://www.linkedin.com/in/lakshman-turlapati-3091aa191/](https://www.linkedin.com/in/lakshman-turlapati-3091aa191/)
+
+"Bringing the power of AI to your database, locally and securely."
+
+This README will evolve with the project. Your feedback and contributions are always appreciated\!
+
+
