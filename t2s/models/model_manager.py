@@ -83,19 +83,83 @@ class ModelManager:
         self.current_processor = None
         self.hf_api = HfApi()
         
-        # Setup device
+        # Setup device with detailed Windows GPU detection
         self.device = self._get_optimal_device()
-        self.console.print(f"[blue]Using device: {self.device}[/blue]")
+        self._report_device_info()
     
     def _get_optimal_device(self) -> str:
-        """Determine the optimal device for model inference."""
+        """Determine the optimal device for model inference with detailed Windows GPU detection."""
+        
+        # Detailed CUDA detection for Windows
         if torch.cuda.is_available():
-            return "cuda"
+            device_count = torch.cuda.device_count()
+            if device_count > 0:
+                # Get GPU info for Windows
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+                
+                # Force CUDA device selection
+                device = "cuda"
+                
+                if self._is_windows_system():
+                    # Extra validation for Windows NVIDIA GPU
+                    try:
+                        # Test CUDA functionality
+                        test_tensor = torch.tensor([1.0]).cuda()
+                        test_result = test_tensor.cpu()
+                        
+                        self.console.print(f"[green]✓ Windows NVIDIA GPU detected and functional![/green]")
+                        self.console.print(f"[blue]GPU: {gpu_name} ({gpu_memory:.1f} GB VRAM)[/blue]")
+                        self.console.print(f"[blue]CUDA devices available: {device_count}[/blue]")
+                        
+                        return device
+                        
+                    except Exception as e:
+                        self.console.print(f"[red]CUDA test failed on Windows: {e}[/red]")
+                        self.console.print(f"[yellow]Falling back to CPU mode[/yellow]")
+                        return "cpu"
+                else:
+                    return device
+                    
         elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             # Apple Silicon MPS
             return "mps"
         else:
+            if self._is_windows_system():
+                self.console.print(f"[yellow]No NVIDIA GPU detected on Windows[/yellow]")
+                self.console.print(f"[yellow]Please ensure NVIDIA drivers and CUDA are properly installed[/yellow]")
             return "cpu"
+    
+    def _report_device_info(self):
+        """Report detailed device information to the user."""
+        self.console.print(f"[bold blue]🚀 Device Information:[/bold blue]")
+        self.console.print(f"[blue]Selected Device: {self.device.upper()}[/blue]")
+        
+        if self.device == "cuda":
+            if torch.cuda.is_available():
+                device_count = torch.cuda.device_count()
+                for i in range(device_count):
+                    gpu_name = torch.cuda.get_device_name(i)
+                    gpu_props = torch.cuda.get_device_properties(i)
+                    gpu_memory = gpu_props.total_memory / (1024**3)  # GB
+                    gpu_compute = f"{gpu_props.major}.{gpu_props.minor}"
+                    
+                    self.console.print(f"[green]  GPU {i}: {gpu_name}[/green]")
+                    self.console.print(f"[green]  VRAM: {gpu_memory:.1f} GB | Compute: {gpu_compute}[/green]")
+                    
+                    # Check available memory
+                    torch.cuda.empty_cache()
+                    free_memory = torch.cuda.get_device_properties(i).total_memory - torch.cuda.memory_allocated(i)
+                    free_gb = free_memory / (1024**3)
+                    self.console.print(f"[green]  Available VRAM: {free_gb:.1f} GB[/green]")
+                    
+        elif self.device == "cpu":
+            import psutil
+            cpu_count = psutil.cpu_count()
+            ram_gb = psutil.virtual_memory().total / (1024**3)
+            self.console.print(f"[yellow]  CPU cores: {cpu_count} | RAM: {ram_gb:.1f} GB[/yellow]")
+            if self._is_windows_system():
+                self.console.print(f"[yellow]  ⚠️  Running on CPU - will be slower than GPU[/yellow]")
     
     def _is_gemma3_multimodal(self, model_config) -> bool:
         """Check if this is a Gemma 3 multimodal model."""
@@ -206,13 +270,12 @@ class ModelManager:
                 model_kwargs = self._get_model_loading_config(model_config)
                 
                 if is_gemma3_multimodal:
-                    # Use direct download approach for Gemma 3 multimodal models to avoid dtype serialization issues
-                    self.console.print(f"[blue]Downloading Gemma 3 multimodal model components directly...[/blue]")
+                    # Use direct download approach for Gemma 3 multimodal models
+                    self.console.print(f"[blue]Downloading Gemma 3 multimodal model for {self.device.upper()}...[/blue]")
                     
-                    # Silently optimize for Windows if needed
-                    if self._is_windows_system():
-                        # Use Windows-optimized settings without additional console output
-                        pass
+                    # Windows + CUDA: Use aggressive GPU settings
+                    if self._is_windows_system() and self.device == "cuda":
+                        self.console.print(f"[green]🚀 Using Windows CUDA acceleration[/green]")
                     
                     task1 = progress.add_task(f"Downloading {model_config.name} components...", total=100)
                     
@@ -244,28 +307,19 @@ class ModelManager:
                         
                         progress.update(task1, completed=50)
                         
-                        # Download model using the correct model class for Gemma 3
-                        model_kwargs_for_download = {
-                            "torch_dtype": torch.float32 if self._is_windows_system() else torch.bfloat16,
-                            "attn_implementation": "eager",  # More stable on Windows
+                        # Download model using optimized configuration
+                        model_kwargs_for_download = self._get_model_loading_config(model_config)
+                        model_kwargs_for_download.update({
                             "cache_dir": str(model_path),
                             "local_files_only": False,
                             "resume_download": True
-                        }
-                        
-                        # Use device_map only on non-Windows platforms to avoid disk offloading issues
-                        if self.device != "cpu" and not self._is_windows_system():
-                            model_kwargs_for_download["device_map"] = "auto"
+                        })
                         
                         # Use Gemma3ForConditionalGeneration for Gemma 3 models
                         model = Gemma3ForConditionalGeneration.from_pretrained(
                             model_config.hf_model_id,
                             **model_kwargs_for_download
                         )
-                        
-                        # Manually move to CUDA on Windows if available (since we disabled device_map)
-                        if self._is_windows_system() and self.device == "cuda":
-                            model = model.to("cuda")
                         
                         progress.update(task1, completed=75)
                         
@@ -278,7 +332,7 @@ class ModelManager:
                         
                         progress.update(task1, completed=100)
                         
-                        self.console.print(f"[green]✓ Successfully downloaded Gemma 3 model[/green]")
+                        self.console.print(f"[green]✓ Successfully downloaded Gemma 3 model for {self.device.upper()}[/green]")
                         
                         # Clean up to free memory
                         if processor:
@@ -293,22 +347,75 @@ class ModelManager:
                         return True
                         
                     except Exception as e:
-                        # Windows-specific error handling
-                        if self._is_windows_system() and ("vision_tower" in str(e) or "patch_embedding" in str(e)):
-                            self.console.print(f"[red]Windows multimodal error: {e}[/red]")
-                            self.console.print("[yellow]Trying Windows CPU-only fallback...[/yellow]")
+                        # Windows-specific error handling with fallback
+                        if self._is_windows_system() and ("vision_tower" in str(e) or "patch_embedding" in str(e) or "out of memory" in str(e).lower()):
+                            self.console.print(f"[red]Windows GPU error: {e}[/red]")
                             
-                            try:
-                                # Try CPU-only approach on Windows with tokenizer fallback
-                                cpu_model_kwargs = {
-                                    "torch_dtype": torch.float32,
-                                    "attn_implementation": "eager",
-                                    "cache_dir": str(model_path),
-                                    "local_files_only": False,
-                                    "resume_download": True
-                                }
+                            # Try with reduced precision first
+                            if self.device == "cuda" and "out of memory" not in str(e).lower():
+                                self.console.print("[yellow]Trying Windows GPU with reduced precision...[/yellow]")
                                 
-                                # Try processor first, fallback to tokenizer
+                                try:
+                                    # Try processor first, fallback to tokenizer
+                                    processor = None
+                                    tokenizer = None
+                                    
+                                    try:
+                                        processor = AutoProcessor.from_pretrained(
+                                            model_config.hf_model_id,
+                                            cache_dir=str(model_path),
+                                            local_files_only=False,
+                                            resume_download=True
+                                        )
+                                    except Exception:
+                                        tokenizer = AutoTokenizer.from_pretrained(
+                                            model_config.hf_model_id,
+                                            cache_dir=str(model_path),
+                                            local_files_only=False,
+                                            resume_download=True
+                                        )
+                                        
+                                    # Use float32 and smaller batch size for stability
+                                    reduced_kwargs = {
+                                        "torch_dtype": torch.float32,
+                                        "attn_implementation": "eager",
+                                        "device_map": "auto",  # Still try GPU but with float32
+                                        "cache_dir": str(model_path),
+                                        "local_files_only": False,
+                                        "resume_download": True
+                                    }
+                                    
+                                    model = Gemma3ForConditionalGeneration.from_pretrained(
+                                        model_config.hf_model_id,
+                                        **reduced_kwargs
+                                    )
+                                    
+                                    # Save components
+                                    if processor:
+                                        processor.save_pretrained(str(model_path))
+                                    if tokenizer:
+                                        tokenizer.save_pretrained(str(model_path))
+                                    model.save_pretrained(str(model_path))
+                                    
+                                    progress.update(task1, completed=100)
+                                    self.console.print(f"[green]✓ Windows GPU fallback successful (float32)[/green]")
+                                    
+                                    # Clean up
+                                    if processor:
+                                        del processor
+                                    if tokenizer:
+                                        del tokenizer
+                                    del model
+                                    
+                                    return True
+                                    
+                                except Exception as reduced_error:
+                                    self.console.print(f"[red]GPU fallback also failed: {reduced_error}[/red]")
+                                
+                            # Final CPU fallback
+                            self.console.print("[yellow]Trying final CPU fallback...[/yellow]")
+                            try:
+                                # Try CPU-only approach as last resort
                                 processor = None
                                 tokenizer = None
                                 
@@ -326,33 +433,45 @@ class ModelManager:
                                         local_files_only=False,
                                         resume_download=True
                                     )
-                                
-                                model = Gemma3ForConditionalGeneration.from_pretrained(
-                                    model_config.hf_model_id,
-                                    **cpu_model_kwargs
-                                )
-                                
-                                # Save components
-                                if processor:
-                                    processor.save_pretrained(str(model_path))
-                                if tokenizer:
-                                    tokenizer.save_pretrained(str(model_path))
-                                model.save_pretrained(str(model_path))
-                                
-                                progress.update(task1, completed=100)
-                                self.console.print(f"[green]✓ Windows CPU fallback successful for Gemma 3[/green]")
-                                
-                                # Clean up
-                                if processor:
-                                    del processor
-                                if tokenizer:
-                                    del tokenizer
-                                del model
-                                
-                                return True
-                                
-                            except Exception as fallback_error:
-                                self.logger.error(f"Windows fallback also failed: {fallback_error}")
+                                    
+                                    cpu_model_kwargs = {
+                                        "torch_dtype": torch.float32,
+                                        "attn_implementation": "eager",
+                                        "cache_dir": str(model_path),
+                                        "local_files_only": False,
+                                        "resume_download": True
+                                        # No device_map for CPU
+                                    }
+                                    
+                                    model = Gemma3ForConditionalGeneration.from_pretrained(
+                                        model_config.hf_model_id,
+                                        **cpu_model_kwargs
+                                    )
+                                    
+                                    # Save components
+                                    if processor:
+                                        processor.save_pretrained(str(model_path))
+                                    if tokenizer:
+                                        tokenizer.save_pretrained(str(model_path))
+                                    model.save_pretrained(str(model_path))
+                                    
+                                    progress.update(task1, completed=100)
+                                    self.console.print(f"[yellow]✓ CPU fallback successful (will be slower)[/yellow]")
+                                    
+                                    # Clean up
+                                    if processor:
+                                        del processor
+                                    if tokenizer:
+                                        del tokenizer
+                                    del model
+                                    
+                                    return True
+                                    
+                                except Exception as fallback_error:
+                                    self.logger.error(f"All fallbacks failed: {fallback_error}")
+                                    raise e
+                            except Exception as cpu_fallback_error:
+                                self.logger.error(f"CPU fallback failed: {cpu_fallback_error}")
                                 raise e
                         else:
                             raise e
@@ -610,7 +729,7 @@ class ModelManager:
             return False
     
     def _get_model_loading_config(self, model_config) -> Dict[str, Any]:
-        """Get model loading configuration based on device and model size."""
+        """Get model loading configuration based on device and model size with aggressive Windows GPU usage."""
         config = {}
         
         # Check if this is a Gemma 3 multimodal model
@@ -622,24 +741,41 @@ class ModelManager:
         # Check if this is a SmolVLM model that needs multimodal handling
         is_smolvlm_model = "smolvlm" in model_config.hf_model_id.lower()
         
-        # Windows-specific optimizations
-        if self._is_windows_system():
+        # Windows-specific optimizations - AGGRESSIVE GPU USAGE
+        if self._is_windows_system() and self.device == "cuda":
             if is_gemma3_multimodal:
-                # Use Windows-optimized settings for Gemma 3, avoid device_map="auto" to prevent disk offloading
-                config["torch_dtype"] = torch.float32  # More stable on Windows
-                config["device_map"] = None  # Disable device_map on Windows to avoid disk offloading errors
+                # Use CUDA aggressively for Gemma 3 on Windows
+                config["torch_dtype"] = torch.float16  # Use float16 for better GPU performance
+                config["device_map"] = "auto"  # Enable device_map for better GPU utilization
                 config["attn_implementation"] = "eager"  # Most stable attention
+                config["low_cpu_mem_usage"] = True  # Keep more on GPU
+                self.console.print(f"[green]🚀 Windows + CUDA: Using aggressive GPU settings for Gemma 3[/green]")
+                return config
+            else:
+                # For other models on Windows + CUDA
+                config["torch_dtype"] = torch.float16
+                config["device_map"] = "auto"
+                config["low_cpu_mem_usage"] = True
+                self.console.print(f"[green]🚀 Windows + CUDA: Using aggressive GPU settings[/green]")
+        elif self._is_windows_system() and self.device == "cpu":
+            # CPU fallback for Windows
+            if is_gemma3_multimodal:
+                config["torch_dtype"] = torch.float32  # More stable on CPU
+                config["device_map"] = None  # No device mapping for CPU
+                config["attn_implementation"] = "eager"
+                self.console.print(f"[yellow]⚠️  Windows + CPU: Using CPU-optimized settings[/yellow]")
                 return config
         
-        # Use quantization for large models or limited memory
-        if model_config.size.value == "large" and self.device == "cuda" and not self._is_windows_system():
-            # Use 4-bit quantization for CUDA only (skip on Windows for stability)
+        # Use quantization for large models or limited memory - but prefer GPU
+        if model_config.size.value == "large" and self.device == "cuda":
+            # Use 4-bit quantization for CUDA to fit large models
             config["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type="nf4"
             )
+            self.console.print(f"[blue]Using 4-bit quantization for large model on GPU[/blue]")
         else:
             # Use appropriate precision for device
             if self.device == "mps":
@@ -648,13 +784,14 @@ class ModelManager:
             elif self.device == "cpu":
                 config["torch_dtype"] = torch.float32
             else:  # CUDA
-                # For CUDA, use bfloat16 for Gemma models, float16 for others
-                config["torch_dtype"] = torch.bfloat16 if (is_legacy_gemma or is_gemma3_multimodal) else torch.float16
+                # For CUDA, use float16 for better performance
+                config["torch_dtype"] = torch.float16
         
-        # Set device map for auto distribution - be conservative on Windows to avoid disk offloading
-        if self.device != "cpu" and not self._is_windows_system():
-            # Use device_map for CUDA/MPS on non-Windows platforms only
+        # Set device map for auto distribution - ALWAYS use for GPU
+        if self.device != "cpu":
+            # Use device_map for CUDA/MPS for better performance
             config["device_map"] = "auto"
+            config["low_cpu_mem_usage"] = True  # Keep more on GPU
         
         # Add attention implementation for Gemma models to avoid conflicts
         if is_legacy_gemma or is_gemma3_multimodal:
@@ -747,15 +884,11 @@ class ModelManager:
                     if is_gemma3_multimodal:
                         # Use direct approach for Gemma 3 models with processor/tokenizer fallback
                         try:
-                            self.console.print(f"[blue]Loading {model_config.name} as Gemma 3 model...[/blue]")
+                            self.console.print(f"[blue]Loading {model_config.name} as Gemma 3 model on {self.device.upper()}...[/blue]")
                             
-                            # Silently detect and use best available device on Windows
+                            # Windows + CUDA: Report GPU usage
                             if self._is_windows_system() and self.device == "cuda":
-                                # Use CUDA on Windows without extra logging to keep CLI clean
-                                pass
-                            elif self._is_windows_system():
-                                # Use CPU on Windows if CUDA not available
-                                pass
+                                self.console.print(f"[green]🚀 Using Windows NVIDIA GPU acceleration[/green]")
                             
                             # Try to load processor first, fallback to tokenizer
                             processor = None
@@ -772,24 +905,13 @@ class ModelManager:
                                 self.current_processor = None
                                 self.console.print(f"[green]✓ Loaded AutoTokenizer for {model_config.name}[/green]")
                             
-                            # Load model with appropriate settings
-                            model_load_kwargs = {
-                                "torch_dtype": torch.float32 if self._is_windows_system() else torch.bfloat16,
-                                "attn_implementation": "eager"  # More stable, especially on Windows
-                            }
-                            
-                            # Use device_map only on non-Windows platforms to avoid disk offloading issues
-                            if self.device != "cpu" and not self._is_windows_system():
-                                model_load_kwargs["device_map"] = "auto"
+                            # Load model with optimized settings
+                            model_load_kwargs = self._get_model_loading_config(model_config)
                             
                             self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
                                 str(model_path),
                                 **model_load_kwargs
                             )
-                            
-                            # Manually move to CUDA on Windows if available (since we disabled device_map)
-                            if self._is_windows_system() and self.device == "cuda":
-                                self.current_model = self.current_model.to("cuda")
                             
                             # For consistency, we don't use pipeline for Gemma 3
                             self.current_pipeline = None
@@ -798,46 +920,68 @@ class ModelManager:
                             if self.current_tokenizer and self.current_tokenizer.pad_token is None:
                                 self.current_tokenizer.pad_token = self.current_tokenizer.eos_token
                             
-                            self.console.print(f"[green]✓ Successfully loaded {model_config.name}[/green]")
+                            # Report successful GPU loading
+                            if self.device == "cuda":
+                                gpu_memory_used = torch.cuda.memory_allocated() / (1024**3)
+                                self.console.print(f"[green]✓ Model loaded on GPU (using {gpu_memory_used:.1f} GB VRAM)[/green]")
+                            
+                            self.console.print(f"[green]✓ Successfully loaded {model_config.name} on {self.device.upper()}[/green]")
                             
                         except Exception as e:
-                            # Windows-specific error handling
-                            if self._is_windows_system() and ("vision_tower" in str(e) or "patch_embedding" in str(e)):
-                                self.console.print(f"[red]Windows multimodal error: {e}[/red]")
-                                self.console.print("[yellow]Trying Windows CPU fallback...[/yellow]")
+                            # Windows-specific error handling with aggressive retry
+                            if self._is_windows_system() and ("vision_tower" in str(e) or "patch_embedding" in str(e) or "out of memory" in str(e).lower()):
+                                self.console.print(f"[red]Windows GPU error: {e}[/red]")
                                 
-                                try:
-                                    # Force CPU mode for Windows with processor/tokenizer fallback
-                                    processor = None
-                                    tokenizer = None
+                                # Try with reduced precision first if not OOM
+                                if self.device == "cuda" and "out of memory" not in str(e).lower():
+                                    self.console.print("[yellow]Trying reduced precision on GPU...[/yellow]")
                                     
                                     try:
-                                        self.current_processor = AutoProcessor.from_pretrained(str(model_path))
-                                        processor = self.current_processor
-                                    except Exception:
-                                        self.current_tokenizer = AutoTokenizer.from_pretrained(str(model_path))
-                                        tokenizer = self.current_tokenizer
-                                        self.current_processor = None
+                                        # Reload with float32 but keep on GPU
+                                        processor = None
+                                        tokenizer = None
                                         
-                                        # Ensure tokenizer has necessary special tokens
-                                        if self.current_tokenizer.pad_token is None:
-                                            self.current_tokenizer.pad_token = self.current_tokenizer.eos_token
-                                    
-                                    self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
-                                        str(model_path),
-                                        torch_dtype=torch.float32,
-                                        attn_implementation="eager"
-                                        # No device_map for Windows to avoid disk offloading
-                                    )
-                                    
-                                    # Don't try to move to CUDA in fallback mode - stay on CPU
-                                    self.current_pipeline = None
-                                    
-                                    self.console.print(f"[green]✓ Windows CPU fallback successful for {model_config.name}[/green]")
-                                    
-                                except Exception as fallback_error:
-                                    self.logger.error(f"Windows fallback failed for Gemma 3: {fallback_error}")
-                                    raise RuntimeError(f"Failed to load Gemma 3 on Windows: {e}")
+                                        try:
+                                            self.current_processor = AutoProcessor.from_pretrained(str(model_path))
+                                            processor = self.current_processor
+                                        except Exception:
+                                            self.current_tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+                                            tokenizer = self.current_tokenizer
+                                            self.current_processor = None
+                                            
+                                            # Ensure tokenizer has necessary special tokens
+                                            if self.current_tokenizer.pad_token is None:
+                                                self.current_tokenizer.pad_token = self.current_tokenizer.eos_token
+                                        
+                                        # Use float32 for stability but keep device_map for GPU
+                                        reduced_kwargs = {
+                                            "torch_dtype": torch.float32,
+                                            "attn_implementation": "eager",
+                                            "device_map": "auto",  # Still use GPU
+                                            "low_cpu_mem_usage": True
+                                        }
+                                        
+                                        self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
+                                            str(model_path),
+                                            **reduced_kwargs
+                                        )
+                                        
+                                        self.current_pipeline = None
+                                        
+                                        # Report successful GPU loading with reduced precision
+                                        gpu_memory_used = torch.cuda.memory_allocated() / (1024**3)
+                                        self.console.print(f"[green]✓ Loaded on GPU with float32 (using {gpu_memory_used:.1f} GB VRAM)[/green]")
+                                        
+                                    except Exception as reduced_error:
+                                        self.console.print(f"[red]Reduced precision failed: {reduced_error}[/red]")
+                                        raise RuntimeError(f"Failed to load Gemma 3 on Windows GPU: {e}")
+                                else:
+                                    # OOM or other critical error - don't fallback to CPU, inform user
+                                    if "out of memory" in str(e).lower():
+                                        self.console.print(f"[red]GPU out of memory! Model too large for available VRAM.[/red]")
+                                        raise RuntimeError(f"GPU out of memory. Try a smaller model or upgrade GPU: {e}")
+                                    else:
+                                        raise RuntimeError(f"Failed to load Gemma 3 on Windows GPU: {e}")
                             else:
                                 self.logger.error(f"Gemma 3 loading failed: {e}")
                                 raise
