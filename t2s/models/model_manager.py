@@ -1207,6 +1207,59 @@ class ModelManager:
                 else:
                     os.environ[key] = original_value
     
+    def _validate_input_tensors(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and fix tensor indices to prevent device-side asserts."""
+        validated_inputs = {}
+        
+        for key, value in inputs.items():
+            if isinstance(value, torch.Tensor):
+                # Fix potential index out of bounds issues
+                if key in ['input_ids', 'attention_mask']:
+                    # Ensure indices are within valid range for vocabulary
+                    if key == 'input_ids' and hasattr(self.current_tokenizer, 'vocab_size'):
+                        # Clamp input_ids to valid vocabulary range
+                        vocab_size = self.current_tokenizer.vocab_size
+                        value = torch.clamp(value, 0, vocab_size - 1)
+                    elif key == 'input_ids' and hasattr(self.current_processor, 'tokenizer') and hasattr(self.current_processor.tokenizer, 'vocab_size'):
+                        # For processor-based models
+                        vocab_size = self.current_processor.tokenizer.vocab_size
+                        value = torch.clamp(value, 0, vocab_size - 1)
+                
+                # Ensure tensor is contiguous (fixes memory layout issues)
+                if not value.is_contiguous():
+                    value = value.contiguous()
+                
+                validated_inputs[key] = value
+            else:
+                validated_inputs[key] = value
+        
+        return validated_inputs
+
+    def _safe_to_device(self, tensor_dict: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
+        """Safely move tensors to device with proper error handling."""
+        result = {}
+        
+        for key, value in tensor_dict.items():
+            if isinstance(value, torch.Tensor):
+                try:
+                    # Move tensor to device with proper dtype conversion
+                    if device.type == 'cuda':
+                        # Use non_blocking for better performance
+                        result[key] = value.to(device, non_blocking=True)
+                    else:
+                        result[key] = value.to(device)
+                except RuntimeError as e:
+                    if "CUDA" in str(e) or "device-side assert" in str(e):
+                        # Fallback to CPU for this tensor
+                        self.console.print(f"[yellow]Moving {key} to CPU due to GPU error: {e}[/yellow]")
+                        result[key] = value.cpu()
+                    else:
+                        raise e
+            else:
+                result[key] = value
+        
+        return result
+
     async def generate_sql(self, system_prompt: str, user_prompt: str) -> str:
         """Generate SQL query using the loaded model."""
         
@@ -1255,28 +1308,45 @@ class ModelManager:
             # Generate response with model-specific parameters
             with torch.inference_mode():
                 try:
+                    # Set CUDA_LAUNCH_BLOCKING for better error reporting
+                    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+                    
                     response = self.current_pipeline(
                         full_prompt,
                         **generation_params
                     )
+                    
                 except RuntimeError as e:
-                    if "device-side assert" in str(e) or "CUDA error" in str(e):
-                        # GPU generation failed, try CPU fallback
-                        self.console.print(f"[yellow]GPU generation failed, trying CPU fallback...[/yellow]")
+                    if "device-side assert" in str(e) or "CUDA error" in str(e) or "index out of bounds" in str(e):
+                        # Comprehensive GPU fallback handling
+                        self.console.print(f"[yellow]GPU generation failed with device-side assert, trying CPU fallback...[/yellow]")
                         
-                        # Temporarily move pipeline to CPU
-                        original_device = self.current_pipeline.model.device
-                        self.current_pipeline.model = self.current_pipeline.model.cpu()
-                        self.current_pipeline.device = -1  # CPU device for pipeline
-                        
-                        response = self.current_pipeline(
-                            full_prompt,
-                            **generation_params
-                        )
-                        
-                        # Move back to GPU
-                        self.current_pipeline.model = self.current_pipeline.model.to(original_device)
-                        self.current_pipeline.device = 0 if original_device.type == 'cuda' else -1
+                        try:
+                            # Temporarily move pipeline to CPU
+                            original_device = self.current_pipeline.model.device
+                            
+                            # Move model to CPU
+                            self.current_pipeline.model = self.current_pipeline.model.cpu()
+                            self.current_pipeline.device = -1  # CPU device for pipeline
+                            
+                            # Clear CUDA cache
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                                torch.cuda.synchronize()
+                            
+                            # Try generation on CPU
+                            response = self.current_pipeline(
+                                full_prompt,
+                                **generation_params
+                            )
+                            
+                            # Move back to GPU after successful generation
+                            self.current_pipeline.model = self.current_pipeline.model.to(original_device)
+                            self.current_pipeline.device = 0 if original_device.type == 'cuda' else -1
+                            
+                        except Exception as cpu_error:
+                            self.console.print(f"[red]CPU fallback also failed: {cpu_error}[/red]")
+                            raise RuntimeError(f"Both GPU and CPU generation failed. GPU error: {e}, CPU error: {cpu_error}")
                     else:
                         raise e
             
@@ -1289,9 +1359,13 @@ class ModelManager:
             
         except Exception as e:
             self.logger.error(f"Error generating SQL: {e}")
-            # Additional error handling for common Windows GPU issues
-            if "device-side assert" in str(e) or "CUDA error" in str(e):
-                raise RuntimeError(f"GPU generation failed. Try using a different model or restart T2S: {e}")
+            # Enhanced error handling for common GPU issues
+            if "device-side assert" in str(e) or "CUDA error" in str(e) or "index out of bounds" in str(e):
+                error_msg = (f"GPU generation failed with device-side assert error. "
+                           f"This is often caused by index out of bounds or memory issues. "
+                           f"The model has been moved to CPU as a fallback. Try using a different model or restart T2S. "
+                           f"Original error: {e}")
+                raise RuntimeError(error_msg)
             else:
                 raise RuntimeError(f"Error generating SQL: {e}")
     
@@ -1358,18 +1432,31 @@ class ModelManager:
             
             if self.current_processor:
                 # Use processor approach (for true multimodal Gemma 3 models)
-                inputs = self.current_processor(
-                    text=full_prompt,
-                    images=None,  # Text-only input
-                    return_tensors="pt"
-                )
-                
-                # Move inputs to the model's device
-                inputs = {k: v.to(self.current_model.device) for k, v in inputs.items() if v is not None}
+                try:
+                    inputs = self.current_processor(
+                        text=full_prompt,
+                        images=None,  # Text-only input
+                        return_tensors="pt"
+                    )
+                    
+                    # Validate and fix input tensors to prevent device-side asserts
+                    inputs = self._validate_input_tensors(inputs)
+                    
+                    # Move inputs to the model's device safely
+                    inputs = self._safe_to_device(inputs, self.current_model.device)
+                    # Filter out None values
+                    inputs = {k: v for k, v in inputs.items() if v is not None}
+                    
+                except Exception as input_error:
+                    self.console.print(f"[red]Input processing failed: {input_error}[/red]")
+                    raise RuntimeError(f"Failed to process input for Gemma 3: {input_error}")
                 
                 # Generate with appropriate parameters for Gemma 3
                 with torch.inference_mode():
                     try:
+                        # Set CUDA_LAUNCH_BLOCKING for better error reporting
+                        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+                        
                         generated_ids = self.current_model.generate(
                             **inputs,
                             max_new_tokens=200,
@@ -1380,53 +1467,93 @@ class ModelManager:
                             pad_token_id=self.current_processor.tokenizer.pad_token_id,
                             eos_token_id=self.current_processor.tokenizer.eos_token_id
                         )
+                        
                     except RuntimeError as e:
-                        if "device-side assert" in str(e) or "CUDA error" in str(e):
-                            # Fallback to CPU for this generation if GPU fails
-                            self.console.print(f"[yellow]GPU generation failed, trying CPU fallback...[/yellow]")
+                        if "device-side assert" in str(e) or "CUDA error" in str(e) or "index out of bounds" in str(e):
+                            # Comprehensive fallback strategy
+                            self.console.print(f"[yellow]GPU generation failed with device-side assert, trying CPU fallback...[/yellow]")
                             
-                            # Move to CPU temporarily
-                            cpu_inputs = {k: v.cpu() for k, v in inputs.items()}
-                            model_device = self.current_model.device
-                            self.current_model = self.current_model.cpu()
-                            
-                            generated_ids = self.current_model.generate(
-                                **cpu_inputs,
-                                max_new_tokens=200,
-                                temperature=0.7,
-                                top_p=0.9,
-                                do_sample=True,
-                                repetition_penalty=1.1,
-                                pad_token_id=self.current_processor.tokenizer.pad_token_id,
-                                eos_token_id=self.current_processor.tokenizer.eos_token_id
-                            )
-                            
-                            # Move model back to original device
-                            self.current_model = self.current_model.to(model_device)
+                            try:
+                                # Move everything to CPU temporarily
+                                cpu_inputs = {}
+                                for k, v in inputs.items():
+                                    if isinstance(v, torch.Tensor):
+                                        cpu_inputs[k] = v.cpu().contiguous()
+                                    else:
+                                        cpu_inputs[k] = v
+                                
+                                model_device = self.current_model.device
+                                self.current_model = self.current_model.cpu()
+                                
+                                # Clear CUDA cache
+                                if torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
+                                    torch.cuda.synchronize()
+                                
+                                # Re-validate inputs on CPU
+                                cpu_inputs = self._validate_input_tensors(cpu_inputs)
+                                
+                                generated_ids = self.current_model.generate(
+                                    **cpu_inputs,
+                                    max_new_tokens=200,
+                                    temperature=0.7,
+                                    top_p=0.9,
+                                    do_sample=True,
+                                    repetition_penalty=1.1,
+                                    pad_token_id=self.current_processor.tokenizer.pad_token_id,
+                                    eos_token_id=self.current_processor.tokenizer.eos_token_id
+                                )
+                                
+                                # Move model back to original device
+                                self.current_model = self.current_model.to(model_device)
+                                
+                            except Exception as cpu_error:
+                                self.console.print(f"[red]CPU fallback also failed: {cpu_error}[/red]")
+                                raise RuntimeError(f"Both GPU and CPU generation failed. GPU error: {e}, CPU error: {cpu_error}")
                         else:
                             raise e
                 
                 # Decode the generated text
-                generated_texts = self.current_processor.decode(
-                    generated_ids[0],
-                    skip_special_tokens=True
-                )
+                try:
+                    generated_texts = self.current_processor.decode(
+                        generated_ids[0],
+                        skip_special_tokens=True
+                    )
+                except Exception as decode_error:
+                    # Fallback decoding
+                    self.console.print(f"[yellow]Primary decode failed, trying fallback: {decode_error}[/yellow]")
+                    generated_texts = self.current_processor.tokenizer.decode(
+                        generated_ids[0],
+                        skip_special_tokens=True
+                    )
                 
             elif self.current_tokenizer:
                 # Use tokenizer approach (for text-only Gemma 3 models)
-                inputs = self.current_tokenizer(
-                    full_prompt,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True
-                )
-                
-                # Move inputs to the model's device
-                inputs = {k: v.to(self.current_model.device) for k, v in inputs.items()}
+                try:
+                    inputs = self.current_tokenizer(
+                        full_prompt,
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True,
+                        max_length=4096  # Limit context to prevent issues
+                    )
+                    
+                    # Validate and fix input tensors
+                    inputs = self._validate_input_tensors(inputs)
+                    
+                    # Move inputs to the model's device safely
+                    inputs = self._safe_to_device(inputs, self.current_model.device)
+                    
+                except Exception as input_error:
+                    self.console.print(f"[red]Tokenizer input processing failed: {input_error}[/red]")
+                    raise RuntimeError(f"Failed to tokenize input for Gemma 3: {input_error}")
                 
                 # Generate with appropriate parameters for Gemma 3
                 with torch.inference_mode():
                     try:
+                        # Set CUDA_LAUNCH_BLOCKING for better error reporting
+                        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+                        
                         generated_ids = self.current_model.generate(
                             **inputs,
                             max_new_tokens=200,
@@ -1437,37 +1564,61 @@ class ModelManager:
                             pad_token_id=self.current_tokenizer.pad_token_id,
                             eos_token_id=self.current_tokenizer.eos_token_id
                         )
+                        
                     except RuntimeError as e:
-                        if "device-side assert" in str(e) or "CUDA error" in str(e):
-                            # Fallback to CPU for this generation if GPU fails
-                            self.console.print(f"[yellow]GPU generation failed, trying CPU fallback...[/yellow]")
+                        if "device-side assert" in str(e) or "CUDA error" in str(e) or "index out of bounds" in str(e):
+                            # Comprehensive fallback strategy
+                            self.console.print(f"[yellow]GPU generation failed with device-side assert, trying CPU fallback...[/yellow]")
                             
-                            # Move to CPU temporarily  
-                            cpu_inputs = {k: v.cpu() for k, v in inputs.items()}
-                            model_device = self.current_model.device
-                            self.current_model = self.current_model.cpu()
-                            
-                            generated_ids = self.current_model.generate(
-                                **cpu_inputs,
-                                max_new_tokens=200,
-                                temperature=0.7,
-                                top_p=0.9,
-                                do_sample=True,
-                                repetition_penalty=1.1,
-                                pad_token_id=self.current_tokenizer.pad_token_id,
-                                eos_token_id=self.current_tokenizer.eos_token_id
-                            )
-                            
-                            # Move model back to original device
-                            self.current_model = self.current_model.to(model_device)
+                            try:
+                                # Move everything to CPU temporarily  
+                                cpu_inputs = {}
+                                for k, v in inputs.items():
+                                    if isinstance(v, torch.Tensor):
+                                        cpu_inputs[k] = v.cpu().contiguous()
+                                    else:
+                                        cpu_inputs[k] = v
+                                
+                                model_device = self.current_model.device
+                                self.current_model = self.current_model.cpu()
+                                
+                                # Clear CUDA cache
+                                if torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
+                                    torch.cuda.synchronize()
+                                
+                                # Re-validate inputs on CPU
+                                cpu_inputs = self._validate_input_tensors(cpu_inputs)
+                                
+                                generated_ids = self.current_model.generate(
+                                    **cpu_inputs,
+                                    max_new_tokens=200,
+                                    temperature=0.7,
+                                    top_p=0.9,
+                                    do_sample=True,
+                                    repetition_penalty=1.1,
+                                    pad_token_id=self.current_tokenizer.pad_token_id,
+                                    eos_token_id=self.current_tokenizer.eos_token_id
+                                )
+                                
+                                # Move model back to original device
+                                self.current_model = self.current_model.to(model_device)
+                                
+                            except Exception as cpu_error:
+                                self.console.print(f"[red]CPU fallback also failed: {cpu_error}[/red]")
+                                raise RuntimeError(f"Both GPU and CPU generation failed. GPU error: {e}, CPU error: {cpu_error}")
                         else:
                             raise e
                 
                 # Decode the generated text
-                generated_texts = self.current_tokenizer.decode(
-                    generated_ids[0],
-                    skip_special_tokens=True
-                )
+                try:
+                    generated_texts = self.current_tokenizer.decode(
+                        generated_ids[0],
+                        skip_special_tokens=True
+                    )
+                except Exception as decode_error:
+                    self.console.print(f"[red]Decoding failed: {decode_error}[/red]")
+                    raise RuntimeError(f"Failed to decode generated text: {decode_error}")
                 
             else:
                 raise RuntimeError("Neither processor nor tokenizer is available for Gemma 3 model")
@@ -1485,9 +1636,13 @@ class ModelManager:
             
         except Exception as e:
             self.logger.error(f"Error generating SQL with Gemma 3: {e}")
-            # Additional error handling for common Windows GPU issues
-            if "device-side assert" in str(e) or "CUDA error" in str(e):
-                raise RuntimeError(f"GPU generation failed. Try using a different model or restart T2S: {e}")
+            # Enhanced error handling for common GPU issues
+            if "device-side assert" in str(e) or "CUDA error" in str(e) or "index out of bounds" in str(e):
+                error_msg = (f"GPU generation failed with device-side assert error. "
+                           f"This is often caused by index out of bounds or memory issues. "
+                           f"The model has been moved to CPU as a fallback. Try using a different model or restart T2S. "
+                           f"Original error: {e}")
+                raise RuntimeError(error_msg)
             else:
                 raise RuntimeError(f"Error generating SQL with Gemma 3: {e}")
     
