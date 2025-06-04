@@ -1208,9 +1208,10 @@ class ModelManager:
                     os.environ[key] = original_value
     
     def _validate_input_tensors(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate and fix tensor indices to prevent device-side asserts."""
+        """Validate and fix tensor indices and shapes to prevent device-side asserts and shape mismatches."""
         validated_inputs = {}
         
+        # First pass: collect all tensors and validate basic properties
         for key, value in inputs.items():
             if isinstance(value, torch.Tensor):
                 # Fix potential index out of bounds issues
@@ -1232,6 +1233,63 @@ class ModelManager:
                 validated_inputs[key] = value
             else:
                 validated_inputs[key] = value
+        
+        # Second pass: Fix shape mismatches between input_ids and attention_mask
+        if 'input_ids' in validated_inputs and 'attention_mask' in validated_inputs:
+            input_ids = validated_inputs['input_ids']
+            attention_mask = validated_inputs['attention_mask']
+            
+            # Check if shapes match
+            if input_ids.shape != attention_mask.shape:
+                self.console.print(f"[yellow]Fixing tensor shape mismatch: input_ids {input_ids.shape} vs attention_mask {attention_mask.shape}[/yellow]")
+                
+                # Get the target length (use the longer of the two)
+                input_ids_len = input_ids.shape[-1] if len(input_ids.shape) > 0 else 0
+                attention_mask_len = attention_mask.shape[-1] if len(attention_mask.shape) > 0 else 0
+                
+                if input_ids_len > attention_mask_len:
+                    # Extend attention_mask to match input_ids
+                    target_length = input_ids_len
+                    if len(attention_mask.shape) == 2:  # [batch_size, seq_len]
+                        batch_size = attention_mask.shape[0]
+                        padding_length = target_length - attention_mask_len
+                        padding = torch.ones(batch_size, padding_length, dtype=attention_mask.dtype, device=attention_mask.device)
+                        validated_inputs['attention_mask'] = torch.cat([attention_mask, padding], dim=-1)
+                    elif len(attention_mask.shape) == 1:  # [seq_len]
+                        padding_length = target_length - attention_mask_len
+                        padding = torch.ones(padding_length, dtype=attention_mask.dtype, device=attention_mask.device)
+                        validated_inputs['attention_mask'] = torch.cat([attention_mask, padding], dim=-1)
+                        
+                elif attention_mask_len > input_ids_len:
+                    # Truncate attention_mask to match input_ids
+                    target_length = input_ids_len
+                    if len(attention_mask.shape) == 2:  # [batch_size, seq_len]
+                        validated_inputs['attention_mask'] = attention_mask[:, :target_length]
+                    elif len(attention_mask.shape) == 1:  # [seq_len]
+                        validated_inputs['attention_mask'] = attention_mask[:target_length]
+                
+                self.console.print(f"[green]✓ Fixed tensor shapes: input_ids {validated_inputs['input_ids'].shape} = attention_mask {validated_inputs['attention_mask'].shape}[/green]")
+        
+        # Third pass: Ensure reasonable sequence lengths to prevent memory issues
+        if 'input_ids' in validated_inputs:
+            input_ids = validated_inputs['input_ids']
+            max_length = 4096  # Conservative limit for most models
+            
+            if input_ids.shape[-1] > max_length:
+                self.console.print(f"[yellow]Truncating input sequence from {input_ids.shape[-1]} to {max_length} tokens[/yellow]")
+                
+                if len(input_ids.shape) == 2:  # [batch_size, seq_len]
+                    validated_inputs['input_ids'] = input_ids[:, :max_length]
+                elif len(input_ids.shape) == 1:  # [seq_len]
+                    validated_inputs['input_ids'] = input_ids[:max_length]
+                
+                # Also truncate attention_mask if it exists
+                if 'attention_mask' in validated_inputs:
+                    attention_mask = validated_inputs['attention_mask']
+                    if len(attention_mask.shape) == 2:  # [batch_size, seq_len]
+                        validated_inputs['attention_mask'] = attention_mask[:, :max_length]
+                    elif len(attention_mask.shape) == 1:  # [seq_len]
+                        validated_inputs['attention_mask'] = attention_mask[:max_length]
         
         return validated_inputs
 
@@ -1277,6 +1335,36 @@ class ModelManager:
         
         # Replace the user_question placeholder in the prompt
         full_prompt = system_prompt.replace("{user_question}", user_prompt)
+        
+        # Pre-validate input with tokenizer to prevent shape mismatches
+        if self.current_tokenizer:
+            try:
+                # Tokenize to check for issues and ensure proper format
+                test_inputs = self.current_tokenizer(
+                    full_prompt,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=4096  # Conservative limit
+                )
+                
+                # Validate the tokenized inputs
+                test_inputs = self._validate_input_tensors(test_inputs)
+                
+                # Check for reasonable input length
+                if 'input_ids' in test_inputs and test_inputs['input_ids'].shape[-1] < 10:
+                    self.console.print(f"[yellow]Warning: Very short input detected ({test_inputs['input_ids'].shape[-1]} tokens)[/yellow]")
+                elif 'input_ids' in test_inputs and test_inputs['input_ids'].shape[-1] > 3000:
+                    self.console.print(f"[yellow]Warning: Very long input detected ({test_inputs['input_ids'].shape[-1]} tokens), may cause issues[/yellow]")
+                
+                self.console.print(f"[blue]Input validation passed: {test_inputs['input_ids'].shape if 'input_ids' in test_inputs else 'No input_ids'}[/blue]")
+                
+            except Exception as tokenizer_error:
+                self.console.print(f"[red]Input validation failed: {tokenizer_error}[/red]")
+                # Try to clean the prompt
+                if len(full_prompt) > 10000:  # Very long prompt
+                    full_prompt = full_prompt[:5000] + "..."
+                    self.console.print(f"[yellow]Truncated very long prompt to prevent tokenizer issues[/yellow]")
         
         try:
             # Set generation parameters based on model type
@@ -1364,6 +1452,11 @@ class ModelManager:
                 error_msg = (f"GPU generation failed with device-side assert error. "
                            f"This is often caused by index out of bounds or memory issues. "
                            f"The model has been moved to CPU as a fallback. Try using a different model or restart T2S. "
+                           f"Original error: {e}")
+                raise RuntimeError(error_msg)
+            elif "expanded size" in str(e) and "must match" in str(e):
+                error_msg = (f"Tensor shape mismatch error. This happens when input_ids and attention_mask have different lengths. "
+                           f"Try using a different prompt or restart T2S. If this persists, the model may have tokenizer compatibility issues. "
                            f"Original error: {e}")
                 raise RuntimeError(error_msg)
             else:
@@ -1641,6 +1734,11 @@ class ModelManager:
                 error_msg = (f"GPU generation failed with device-side assert error. "
                            f"This is often caused by index out of bounds or memory issues. "
                            f"The model has been moved to CPU as a fallback. Try using a different model or restart T2S. "
+                           f"Original error: {e}")
+                raise RuntimeError(error_msg)
+            elif "expanded size" in str(e) and "must match" in str(e):
+                error_msg = (f"Tensor shape mismatch error. This happens when input_ids and attention_mask have different lengths. "
+                           f"Try using a different prompt or restart T2S. If this persists, the model may have tokenizer compatibility issues. "
                            f"Original error: {e}")
                 raise RuntimeError(error_msg)
             else:
