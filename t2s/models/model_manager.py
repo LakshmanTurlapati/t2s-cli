@@ -129,17 +129,69 @@ class ModelManager:
                 # Check if PyTorch was built with CUDA
                 cuda_version = torch.version.cuda
                 if cuda_version is None:
-                    self.console.print(f"[red]❌ PyTorch was installed without CUDA support![/red]")
-                    self.console.print(f"[yellow]To fix: pip uninstall torch torchvision torchaudio[/yellow]")
-                    self.console.print(f"[yellow]Then: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121[/yellow]")
+                    # Check if NVIDIA GPU is available via nvidia-ml-py
+                    if self._has_nvidia_gpu():
+                        self.console.print(f"[yellow]Detected NVIDIA GPU but PyTorch has no CUDA support[/yellow]")
+                        if self._auto_install_cuda_pytorch():
+                            self.console.print(f"[green]✓ CUDA PyTorch installed! Please restart T2S to use GPU[/green]")
+                            return "cpu"  # Still use CPU for this session
+                        else:
+                            self.console.print(f"[red]❌ PyTorch was installed without CUDA support![/red]")
+                            self.console.print(f"[yellow]To fix: pip uninstall torch torchvision torchaudio[/yellow]")
+                            self.console.print(f"[yellow]Then: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121[/yellow]")
+                    else:
+                        self.console.print(f"[red]❌ PyTorch was installed without CUDA support![/red]")
+                        self.console.print(f"[yellow]To fix: pip uninstall torch torchvision torchaudio[/yellow]")
+                        self.console.print(f"[yellow]Then: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121[/yellow]")
                 else:
                     self.console.print(f"[yellow]PyTorch has CUDA {cuda_version} support but no GPU detected[/yellow]")
                     self.console.print(f"[yellow]Check NVIDIA drivers: nvidia-smi[/yellow]")
             return "cpu"
     
+    def _has_nvidia_gpu(self) -> bool:
+        """Check if NVIDIA GPU is available on the system."""
+        try:
+            import subprocess
+            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, timeout=10)
+            return result.returncode == 0 and 'NVIDIA' in result.stdout
+        except Exception:
+            return False
+    
+    def _auto_install_cuda_pytorch(self) -> bool:
+        """Automatically install CUDA-enabled PyTorch on Windows."""
+        try:
+            import subprocess
+            import sys
+            
+            self.console.print(f"[blue]Attempting to automatically install CUDA PyTorch...[/blue]")
+            
+            # Uninstall CPU-only PyTorch
+            self.console.print(f"[yellow]Uninstalling CPU-only PyTorch...[/yellow]")
+            subprocess.run([
+                sys.executable, '-m', 'pip', 'uninstall', 
+                'torch', 'torchvision', 'torchaudio', '-y'
+            ], check=True, capture_output=True)
+            
+            # Install CUDA PyTorch
+            self.console.print(f"[yellow]Installing CUDA PyTorch (this may take a few minutes)...[/yellow]")
+            subprocess.run([
+                sys.executable, '-m', 'pip', 'install', 
+                'torch', 'torchvision', 'torchaudio',
+                '--index-url', 'https://download.pytorch.org/whl/cu121'
+            ], check=True, capture_output=True)
+            
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            self.console.print(f"[red]Auto-installation failed: {e}[/red]")
+            return False
+        except Exception as e:
+            self.console.print(f"[red]Auto-installation error: {e}[/red]")
+            return False
+    
     def _report_device_info(self):
         """Report detailed device information to the user."""
-        self.console.print(f"[blue]🚀 Using device: {self.device.upper()}[/blue]")
+        self.console.print(f"[blue]Using device: {self.device.upper()}[/blue]")
         
         if self.device == "cuda":
             if torch.cuda.is_available():
@@ -274,7 +326,7 @@ class ModelManager:
                     
                     # Windows + CUDA: Use aggressive GPU settings
                     if self._is_windows_system() and self.device == "cuda":
-                        self.console.print(f"[green]🚀 Using Windows CUDA acceleration[/green]")
+                        self.console.print(f"[green]Using Windows CUDA acceleration[/green]")
                     
                     task1 = progress.add_task(f"Downloading {model_config.name} components...", total=100)
                     
@@ -748,14 +800,14 @@ class ModelManager:
                 config["device_map"] = "auto"  # Enable device_map for better GPU utilization
                 config["attn_implementation"] = "eager"  # Most stable attention
                 config["low_cpu_mem_usage"] = True  # Keep more on GPU
-                self.console.print(f"[green]🚀 Windows + CUDA: Using aggressive GPU settings for Gemma 3[/green]")
+                self.console.print(f"[green]Windows + CUDA: Using aggressive GPU settings for Gemma 3[/green]")
                 return config
             else:
                 # For other models on Windows + CUDA
                 config["torch_dtype"] = torch.float16
                 config["device_map"] = "auto"
                 config["low_cpu_mem_usage"] = True
-                self.console.print(f"[green]🚀 Windows + CUDA: Using aggressive GPU settings[/green]")
+                self.console.print(f"[green]Windows + CUDA: Using aggressive GPU settings[/green]")
         elif self._is_windows_system() and self.device == "cpu":
             # CPU fallback for Windows
             if is_gemma3_multimodal:
@@ -887,7 +939,7 @@ class ModelManager:
                             
                             # Windows + CUDA: Report GPU usage
                             if self._is_windows_system() and self.device == "cuda":
-                                self.console.print(f"[green]🚀 Using Windows NVIDIA GPU acceleration[/green]")
+                                self.console.print(f"[green]Using Windows CUDA acceleration[/green]")
                             
                             # Try to load processor first, fallback to tokenizer
                             processor = None
