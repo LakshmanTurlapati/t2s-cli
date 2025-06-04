@@ -1,5 +1,27 @@
 # Windows Debug Guide for T2S CLI
 
+## Installing T2S CLI with Windows Fixes
+
+### Install from Windows Branch (Recommended for Windows Users)
+```bash
+# Install directly from the Windows branch with all fixes
+pip install git+https://github.com/lakshmanturlapati/T2S.git@Windows
+
+# Or clone and install locally:
+git clone -b Windows https://github.com/lakshmanturlapati/T2S.git
+cd T2S
+pip install -e .
+```
+
+### Verify Windows-Optimized Installation
+```bash
+# Test the installation
+t2s --version
+
+# Check if Windows fixes are active
+python -c "import platform; print(f'Platform: {platform.system()}')"
+```
+
 ## Gemma 3 (4B) Vision Model Installation Error on Windows
 
 ### Problem

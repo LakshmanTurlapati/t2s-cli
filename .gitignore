@@ -178,5 +178,5 @@ tmp_dataset.json
 .t2s/
 config.json
 
-# Final review gate script (optional - remove this line if you want to track it)
+# Final review gate script (exclude from version control)
 final_review_gate.py 
