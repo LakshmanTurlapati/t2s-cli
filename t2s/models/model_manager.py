@@ -253,8 +253,8 @@ class ModelManager:
                             "resume_download": True
                         }
                         
-                        # Add device_map for CUDA/MPS on all platforms including Windows
-                        if self.device != "cpu":
+                        # Use device_map only on non-Windows platforms to avoid disk offloading issues
+                        if self.device != "cpu" and not self._is_windows_system():
                             model_kwargs_for_download["device_map"] = "auto"
                         
                         # Use Gemma3ForConditionalGeneration for Gemma 3 models
@@ -262,6 +262,10 @@ class ModelManager:
                             model_config.hf_model_id,
                             **model_kwargs_for_download
                         )
+                        
+                        # Manually move to CUDA on Windows if available (since we disabled device_map)
+                        if self._is_windows_system() and self.device == "cuda":
+                            model = model.to("cuda")
                         
                         progress.update(task1, completed=75)
                         
@@ -621,13 +625,9 @@ class ModelManager:
         # Windows-specific optimizations
         if self._is_windows_system():
             if is_gemma3_multimodal:
-                # Use Windows-optimized settings for Gemma 3, but still allow CUDA if available
+                # Use Windows-optimized settings for Gemma 3, avoid device_map="auto" to prevent disk offloading
                 config["torch_dtype"] = torch.float32  # More stable on Windows
-                if self.device == "cuda":
-                    # Use CUDA on Windows if available
-                    config["device_map"] = "auto"
-                else:
-                    config["device_map"] = None  # Let pipeline handle device mapping for CPU
+                config["device_map"] = None  # Disable device_map on Windows to avoid disk offloading errors
                 config["attn_implementation"] = "eager"  # Most stable attention
                 return config
         
@@ -651,9 +651,9 @@ class ModelManager:
                 # For CUDA, use bfloat16 for Gemma models, float16 for others
                 config["torch_dtype"] = torch.bfloat16 if (is_legacy_gemma or is_gemma3_multimodal) else torch.float16
         
-        # Set device map for auto distribution - let accelerate handle device placement
-        if self.device != "cpu":
-            # Use device_map for CUDA/MPS on all platforms, including Windows
+        # Set device map for auto distribution - be conservative on Windows to avoid disk offloading
+        if self.device != "cpu" and not self._is_windows_system():
+            # Use device_map for CUDA/MPS on non-Windows platforms only
             config["device_map"] = "auto"
         
         # Add attention implementation for Gemma models to avoid conflicts
@@ -778,14 +778,18 @@ class ModelManager:
                                 "attn_implementation": "eager"  # More stable, especially on Windows
                             }
                             
-                            # Use device_map for CUDA/MPS on all platforms including Windows
-                            if self.device != "cpu":
+                            # Use device_map only on non-Windows platforms to avoid disk offloading issues
+                            if self.device != "cpu" and not self._is_windows_system():
                                 model_load_kwargs["device_map"] = "auto"
                             
                             self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
                                 str(model_path),
                                 **model_load_kwargs
                             )
+                            
+                            # Manually move to CUDA on Windows if available (since we disabled device_map)
+                            if self._is_windows_system() and self.device == "cuda":
+                                self.current_model = self.current_model.to("cuda")
                             
                             # For consistency, we don't use pipeline for Gemma 3
                             self.current_pipeline = None
@@ -823,9 +827,10 @@ class ModelManager:
                                         str(model_path),
                                         torch_dtype=torch.float32,
                                         attn_implementation="eager"
-                                        # No device_map for CPU fallback
+                                        # No device_map for Windows to avoid disk offloading
                                     )
                                     
+                                    # Don't try to move to CUDA in fallback mode - stay on CPU
                                     self.current_pipeline = None
                                     
                                     self.console.print(f"[green]✓ Windows CPU fallback successful for {model_config.name}[/green]")
