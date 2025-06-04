@@ -5,11 +5,11 @@
 ### Install from Windows Branch (Recommended for Windows Users)
 ```bash
 # Install directly from the Windows branch with all fixes
-pip install git+https://github.com/lakshmanturlapati/T2S.git@Windows
+pip install git+https://github.com/LakshmanTurlapati/t2s-cli.git@Windows
 
 # Or clone and install locally:
-git clone -b Windows https://github.com/lakshmanturlapati/T2S.git
-cd T2S
+git clone -b Windows https://github.com/LakshmanTurlapati/t2s-cli.git
+cd t2s-cli
 pip install -e .
 ```
 
