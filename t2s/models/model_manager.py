@@ -206,65 +206,146 @@ class ModelManager:
                 model_kwargs = self._get_model_loading_config(model_config)
                 
                 if is_gemma3_multimodal:
-                    # Use direct approach for Gemma 3 multimodal models to avoid dtype serialization issues
+                    # Use direct download approach for Gemma 3 multimodal models to avoid dtype serialization issues
+                    self.console.print(f"[blue]Downloading Gemma 3 multimodal model components directly...[/blue]")
+                    
+                    if self._is_windows_system():
+                        self.console.print("[blue]Using Windows-optimized settings for Gemma 3...[/blue]")
+                    
+                    task1 = progress.add_task(f"Downloading {model_config.name} components...", total=100)
+                    
                     try:
-                        self.console.print(f"[blue]Loading {model_config.name} as multimodal model...[/blue]")
+                        # First try to download with AutoProcessor (for true multimodal models)
+                        progress.update(task1, completed=25)
                         
-                        if self._is_windows_system():
-                            self.console.print("[blue]Using Windows-optimized settings for Gemma 3...[/blue]")
+                        processor = None
+                        tokenizer = None
                         
-                        # Load processor first
-                        self.current_processor = AutoProcessor.from_pretrained(str(model_path))
+                        try:
+                            processor = AutoProcessor.from_pretrained(
+                                model_config.hf_model_id,
+                                cache_dir=str(model_path),
+                                local_files_only=False,
+                                resume_download=True
+                            )
+                            self.console.print(f"[green]✓ Using AutoProcessor for {model_config.name}[/green]")
+                        except Exception as processor_error:
+                            self.console.print(f"[yellow]AutoProcessor failed, trying AutoTokenizer: {processor_error}[/yellow]")
+                            # Fallback to AutoTokenizer for models that don't use AutoProcessor
+                            tokenizer = AutoTokenizer.from_pretrained(
+                                model_config.hf_model_id,
+                                cache_dir=str(model_path),
+                                local_files_only=False,
+                                resume_download=True
+                            )
+                            self.console.print(f"[green]✓ Using AutoTokenizer for {model_config.name}[/green]")
                         
-                        # Load model with appropriate settings
-                        model_load_kwargs = {
+                        progress.update(task1, completed=50)
+                        
+                        # Download model using the correct model class for Gemma 3
+                        model_kwargs_for_download = {
                             "torch_dtype": torch.float32 if self._is_windows_system() else torch.bfloat16,
-                            "attn_implementation": "eager"  # More stable, especially on Windows
+                            "attn_implementation": "eager",  # More stable on Windows
+                            "cache_dir": str(model_path),
+                            "local_files_only": False,
+                            "resume_download": True
                         }
                         
-                        # Add device map only if not on Windows CPU fallback
-                        if not (self._is_windows_system() and self.device == "cuda"):
-                            model_load_kwargs["device_map"] = "auto"
-                        
-                        self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
-                            str(model_path),
-                            **model_load_kwargs
+                        # Use Gemma3ForConditionalGeneration for Gemma 3 models
+                        model = Gemma3ForConditionalGeneration.from_pretrained(
+                            model_config.hf_model_id,
+                            **model_kwargs_for_download
                         )
                         
-                        # For consistency, we don't use pipeline for Gemma 3 multimodal
-                        self.current_pipeline = None
-                        self.current_tokenizer = None  # Gemma 3 multimodal uses processor, not tokenizer
+                        progress.update(task1, completed=75)
                         
-                        self.console.print(f"[green]✓ Successfully loaded {model_config.name} as multimodal model[/green]")
+                        # Save components locally
+                        if processor:
+                            processor.save_pretrained(str(model_path))
+                        if tokenizer:
+                            tokenizer.save_pretrained(str(model_path))
+                        model.save_pretrained(str(model_path))
+                        
+                        progress.update(task1, completed=100)
+                        
+                        self.console.print(f"[green]✓ Successfully downloaded Gemma 3 model[/green]")
+                        
+                        # Clean up to free memory
+                        if processor:
+                            del processor
+                        if tokenizer:
+                            del tokenizer
+                        del model
+                        
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        
+                        return True
                         
                     except Exception as e:
                         # Windows-specific error handling
                         if self._is_windows_system() and ("vision_tower" in str(e) or "patch_embedding" in str(e)):
                             self.console.print(f"[red]Windows multimodal error: {e}[/red]")
-                            self.console.print("[yellow]Trying Windows CPU fallback...[/yellow]")
+                            self.console.print("[yellow]Trying Windows CPU-only fallback...[/yellow]")
                             
                             try:
-                                # Force CPU mode for Windows
-                                self.current_processor = AutoProcessor.from_pretrained(str(model_path))
+                                # Try CPU-only approach on Windows with tokenizer fallback
+                                cpu_model_kwargs = {
+                                    "torch_dtype": torch.float32,
+                                    "attn_implementation": "eager",
+                                    "cache_dir": str(model_path),
+                                    "local_files_only": False,
+                                    "resume_download": True
+                                }
                                 
-                                self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
-                                    str(model_path),
-                                    torch_dtype=torch.float32,
-                                    attn_implementation="eager"
-                                    # No device_map for CPU fallback
+                                # Try processor first, fallback to tokenizer
+                                processor = None
+                                tokenizer = None
+                                
+                                try:
+                                    processor = AutoProcessor.from_pretrained(
+                                        model_config.hf_model_id,
+                                        cache_dir=str(model_path),
+                                        local_files_only=False,
+                                        resume_download=True
+                                    )
+                                except Exception:
+                                    tokenizer = AutoTokenizer.from_pretrained(
+                                        model_config.hf_model_id,
+                                        cache_dir=str(model_path),
+                                        local_files_only=False,
+                                        resume_download=True
+                                    )
+                                
+                                model = Gemma3ForConditionalGeneration.from_pretrained(
+                                    model_config.hf_model_id,
+                                    **cpu_model_kwargs
                                 )
                                 
-                                self.current_pipeline = None
-                                self.current_tokenizer = None
+                                # Save components
+                                if processor:
+                                    processor.save_pretrained(str(model_path))
+                                if tokenizer:
+                                    tokenizer.save_pretrained(str(model_path))
+                                model.save_pretrained(str(model_path))
                                 
-                                self.console.print(f"[green]✓ Windows CPU fallback successful for {model_config.name}[/green]")
+                                progress.update(task1, completed=100)
+                                self.console.print(f"[green]✓ Windows CPU fallback successful for Gemma 3[/green]")
+                                
+                                # Clean up
+                                if processor:
+                                    del processor
+                                if tokenizer:
+                                    del tokenizer
+                                del model
+                                
+                                return True
                                 
                             except Exception as fallback_error:
-                                self.logger.error(f"Windows fallback failed for Gemma 3: {fallback_error}")
-                                raise RuntimeError(f"Failed to load Gemma 3 on Windows: {e}")
+                                self.console.print(f"[red]Windows fallback also failed: {fallback_error}[/red]")
+                                raise e
                         else:
-                            self.logger.error(f"Gemma 3 multimodal loading failed: {e}")
-                            raise
+                            raise e
                 
                 elif is_legacy_gemma:
                     # Use text-generation pipeline for legacy Gemma models (non-multimodal)
@@ -653,15 +734,27 @@ class ModelManager:
                     is_smolvlm_model = "smolvlm" in model_config.hf_model_id.lower()
                     
                     if is_gemma3_multimodal:
-                        # Use direct approach for Gemma 3 multimodal models to avoid dtype serialization issues
+                        # Use direct approach for Gemma 3 models with processor/tokenizer fallback
                         try:
-                            self.console.print(f"[blue]Loading {model_config.name} as multimodal model...[/blue]")
+                            self.console.print(f"[blue]Loading {model_config.name} as Gemma 3 model...[/blue]")
                             
                             if self._is_windows_system():
                                 self.console.print("[blue]Using Windows-optimized settings for Gemma 3...[/blue]")
                             
-                            # Load processor first
-                            self.current_processor = AutoProcessor.from_pretrained(str(model_path))
+                            # Try to load processor first, fallback to tokenizer
+                            processor = None
+                            tokenizer = None
+                            
+                            try:
+                                self.current_processor = AutoProcessor.from_pretrained(str(model_path))
+                                processor = self.current_processor
+                                self.console.print(f"[green]✓ Loaded AutoProcessor for {model_config.name}[/green]")
+                            except Exception as processor_error:
+                                self.console.print(f"[yellow]AutoProcessor failed, using AutoTokenizer: {processor_error}[/yellow]")
+                                self.current_tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+                                tokenizer = self.current_tokenizer
+                                self.current_processor = None
+                                self.console.print(f"[green]✓ Loaded AutoTokenizer for {model_config.name}[/green]")
                             
                             # Load model with appropriate settings
                             model_load_kwargs = {
@@ -678,11 +771,14 @@ class ModelManager:
                                 **model_load_kwargs
                             )
                             
-                            # For consistency, we don't use pipeline for Gemma 3 multimodal
+                            # For consistency, we don't use pipeline for Gemma 3
                             self.current_pipeline = None
-                            self.current_tokenizer = None  # Gemma 3 multimodal uses processor, not tokenizer
                             
-                            self.console.print(f"[green]✓ Successfully loaded {model_config.name} as multimodal model[/green]")
+                            # Ensure tokenizer has necessary special tokens if using tokenizer
+                            if self.current_tokenizer and self.current_tokenizer.pad_token is None:
+                                self.current_tokenizer.pad_token = self.current_tokenizer.eos_token
+                            
+                            self.console.print(f"[green]✓ Successfully loaded {model_config.name}[/green]")
                             
                         except Exception as e:
                             # Windows-specific error handling
@@ -691,8 +787,21 @@ class ModelManager:
                                 self.console.print("[yellow]Trying Windows CPU fallback...[/yellow]")
                                 
                                 try:
-                                    # Force CPU mode for Windows
-                                    self.current_processor = AutoProcessor.from_pretrained(str(model_path))
+                                    # Force CPU mode for Windows with processor/tokenizer fallback
+                                    processor = None
+                                    tokenizer = None
+                                    
+                                    try:
+                                        self.current_processor = AutoProcessor.from_pretrained(str(model_path))
+                                        processor = self.current_processor
+                                    except Exception:
+                                        self.current_tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+                                        tokenizer = self.current_tokenizer
+                                        self.current_processor = None
+                                        
+                                        # Ensure tokenizer has necessary special tokens
+                                        if self.current_tokenizer.pad_token is None:
+                                            self.current_tokenizer.pad_token = self.current_tokenizer.eos_token
                                     
                                     self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
                                         str(model_path),
@@ -702,7 +811,6 @@ class ModelManager:
                                     )
                                     
                                     self.current_pipeline = None
-                                    self.current_tokenizer = None
                                     
                                     self.console.print(f"[green]✓ Windows CPU fallback successful for {model_config.name}[/green]")
                                     
@@ -710,7 +818,7 @@ class ModelManager:
                                     self.logger.error(f"Windows fallback failed for Gemma 3: {fallback_error}")
                                     raise RuntimeError(f"Failed to load Gemma 3 on Windows: {e}")
                             else:
-                                self.logger.error(f"Gemma 3 multimodal loading failed: {e}")
+                                self.logger.error(f"Gemma 3 loading failed: {e}")
                                 raise
                     
                     elif is_legacy_gemma:
@@ -1002,40 +1110,74 @@ class ModelManager:
             raise RuntimeError(f"Error generating SQL with SmolVLM: {e}")
     
     async def _generate_sql_gemma3_multimodal(self, system_prompt: str, user_prompt: str) -> str:
-        """Generate SQL using Gemma 3 multimodal model with text-only input."""
+        """Generate SQL using Gemma 3 model with text-only input (supports both processor and tokenizer)."""
         try:
             # Replace the user_question placeholder in the prompt
             full_prompt = system_prompt.replace("{user_question}", user_prompt)
             
-            # Since we're using direct model loading instead of pipeline, process manually
-            # Prepare input using the processor
-            inputs = self.current_processor(
-                text=full_prompt,
-                images=None,  # Text-only input
-                return_tensors="pt"
-            )
-            
-            # Move inputs to the model's device
-            inputs = {k: v.to(self.current_model.device) for k, v in inputs.items() if v is not None}
-            
-            # Generate with appropriate parameters for Gemma 3
-            with torch.inference_mode():
-                generated_ids = self.current_model.generate(
-                    **inputs,
-                    max_new_tokens=200,
-                    temperature=0.7,
-                    top_p=0.9,
-                    do_sample=True,
-                    repetition_penalty=1.1,
-                    pad_token_id=self.current_processor.tokenizer.pad_token_id,
-                    eos_token_id=self.current_processor.tokenizer.eos_token_id
+            if self.current_processor:
+                # Use processor approach (for true multimodal Gemma 3 models)
+                inputs = self.current_processor(
+                    text=full_prompt,
+                    images=None,  # Text-only input
+                    return_tensors="pt"
                 )
-            
-            # Decode the generated text
-            generated_texts = self.current_processor.decode(
-                generated_ids[0],
-                skip_special_tokens=True
-            )
+                
+                # Move inputs to the model's device
+                inputs = {k: v.to(self.current_model.device) for k, v in inputs.items() if v is not None}
+                
+                # Generate with appropriate parameters for Gemma 3
+                with torch.inference_mode():
+                    generated_ids = self.current_model.generate(
+                        **inputs,
+                        max_new_tokens=200,
+                        temperature=0.7,
+                        top_p=0.9,
+                        do_sample=True,
+                        repetition_penalty=1.1,
+                        pad_token_id=self.current_processor.tokenizer.pad_token_id,
+                        eos_token_id=self.current_processor.tokenizer.eos_token_id
+                    )
+                
+                # Decode the generated text
+                generated_texts = self.current_processor.decode(
+                    generated_ids[0],
+                    skip_special_tokens=True
+                )
+                
+            elif self.current_tokenizer:
+                # Use tokenizer approach (for text-only Gemma 3 models)
+                inputs = self.current_tokenizer(
+                    full_prompt,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True
+                )
+                
+                # Move inputs to the model's device
+                inputs = {k: v.to(self.current_model.device) for k, v in inputs.items()}
+                
+                # Generate with appropriate parameters for Gemma 3
+                with torch.inference_mode():
+                    generated_ids = self.current_model.generate(
+                        **inputs,
+                        max_new_tokens=200,
+                        temperature=0.7,
+                        top_p=0.9,
+                        do_sample=True,
+                        repetition_penalty=1.1,
+                        pad_token_id=self.current_tokenizer.pad_token_id,
+                        eos_token_id=self.current_tokenizer.eos_token_id
+                    )
+                
+                # Decode the generated text
+                generated_texts = self.current_tokenizer.decode(
+                    generated_ids[0],
+                    skip_special_tokens=True
+                )
+                
+            else:
+                raise RuntimeError("Neither processor nor tokenizer is available for Gemma 3 model")
             
             # Remove the original prompt from the generated text
             if full_prompt in generated_texts:
@@ -1049,8 +1191,8 @@ class ModelManager:
             return sql_query
             
         except Exception as e:
-            self.logger.error(f"Error generating SQL with Gemma 3 multimodal: {e}")
-            raise RuntimeError(f"Error generating SQL with Gemma 3 multimodal: {e}")
+            self.logger.error(f"Error generating SQL with Gemma 3: {e}")
+            raise RuntimeError(f"Error generating SQL with Gemma 3: {e}")
     
     def _clean_generated_sql(self, generated_text: str) -> str:
         """Clean up generated SQL query."""
