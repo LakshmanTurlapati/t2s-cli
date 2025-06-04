@@ -6,9 +6,9 @@ Created by Lakshman Turlapati
 Repository: https://github.com/lakshmanturlapati/t2s-cli
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 __author__ = "Lakshman Turlapati"
-__email__ = "lakshman@example.com"
+__email__ = "lakshmanturlapati@gmail.com"
 __description__ = "Terminal-based Text-to-SQL converter with AI model integration"
 __url__ = "https://github.com/lakshmanturlapati/t2s-cli"
 
