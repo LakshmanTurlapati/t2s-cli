@@ -206,95 +206,65 @@ class ModelManager:
                 model_kwargs = self._get_model_loading_config(model_config)
                 
                 if is_gemma3_multimodal:
-                    # Use pipeline approach for Gemma 3 multimodal models with proper task
-                    self.console.print(f"[blue]Downloading Gemma 3 multimodal model using vision pipeline...[/blue]")
-                    
-                    if self._is_windows_system():
-                        self.console.print("[blue]Using Windows-optimized settings for Gemma 3...[/blue]")
-                    
-                    task1 = progress.add_task(f"Downloading {model_config.name} via pipeline...", total=100)
-                    
+                    # Use direct approach for Gemma 3 multimodal models to avoid dtype serialization issues
                     try:
-                        # For Gemma 3 multimodal: use image-text-to-text pipeline
-                        test_pipeline = pipeline(
-                            "image-text-to-text",  # FIXED: Use correct task for Gemma 3 multimodal
-                            model=model_config.hf_model_id,
-                            device="cpu" if self._is_windows_system() and self.device == "cuda" else self.device,  # Windows fallback
-                            torch_dtype=torch.float32 if self._is_windows_system() else model_kwargs.get("torch_dtype", torch.bfloat16),
-                            model_kwargs={
-                                "attn_implementation": "eager"  # More stable on Windows, removed trust_remote_code to avoid duplicate parameter
-                            },
-                            cache_dir=str(model_path)
+                        self.console.print(f"[blue]Loading {model_config.name} as multimodal model...[/blue]")
+                        
+                        if self._is_windows_system():
+                            self.console.print("[blue]Using Windows-optimized settings for Gemma 3...[/blue]")
+                        
+                        # Load processor first
+                        self.current_processor = AutoProcessor.from_pretrained(str(model_path))
+                        
+                        # Load model with appropriate settings
+                        model_load_kwargs = {
+                            "torch_dtype": torch.float32 if self._is_windows_system() else torch.bfloat16,
+                            "attn_implementation": "eager"  # More stable, especially on Windows
+                        }
+                        
+                        # Add device map only if not on Windows CPU fallback
+                        if not (self._is_windows_system() and self.device == "cuda"):
+                            model_load_kwargs["device_map"] = "auto"
+                        
+                        self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
+                            str(model_path),
+                            **model_load_kwargs
                         )
                         
-                        progress.update(task1, completed=50)
+                        # For consistency, we don't use pipeline for Gemma 3 multimodal
+                        self.current_pipeline = None
+                        self.current_tokenizer = None  # Gemma 3 multimodal uses processor, not tokenizer
                         
-                        # Extract and save the components  
-                        processor = test_pipeline.tokenizer if hasattr(test_pipeline, 'tokenizer') else test_pipeline.image_processor
-                        model = test_pipeline.model
-                        
-                        progress.update(task1, completed=75)
-                        
-                        # Save locally
-                        if hasattr(processor, 'save_pretrained'):
-                            processor.save_pretrained(str(model_path))
-                        model.save_pretrained(str(model_path))
-                        
-                        progress.update(task1, completed=100)
-                        
-                        self.console.print(f"[green]✓ Successfully downloaded Gemma 3 multimodal model[/green]")
-                        
-                        # Clean up pipeline to free memory
-                        del test_pipeline
-                        del processor
-                        del model
-                        
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        
-                        return True
+                        self.console.print(f"[green]✓ Successfully loaded {model_config.name} as multimodal model[/green]")
                         
                     except Exception as e:
                         # Windows-specific error handling
-                        if self._is_windows_system() and "vision_tower" in str(e):
-                            self.console.print(f"[red]Windows vision model error: {e}[/red]")
-                            self.console.print("[yellow]Trying Windows fallback approach...[/yellow]")
+                        if self._is_windows_system() and ("vision_tower" in str(e) or "patch_embedding" in str(e)):
+                            self.console.print(f"[red]Windows multimodal error: {e}[/red]")
+                            self.console.print("[yellow]Trying Windows CPU fallback...[/yellow]")
                             
-                            # Try CPU-only approach on Windows
                             try:
                                 # Force CPU mode for Windows
-                                test_pipeline = pipeline(
-                                    "image-text-to-text",
-                                    model=model_config.hf_model_id,
-                                    device="cpu",
+                                self.current_processor = AutoProcessor.from_pretrained(str(model_path))
+                                
+                                self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
+                                    str(model_path),
                                     torch_dtype=torch.float32,
-                                    model_kwargs={"attn_implementation": "eager"},  # Removed trust_remote_code to avoid duplicate parameter
-                                    cache_dir=str(model_path)
+                                    attn_implementation="eager"
+                                    # No device_map for CPU fallback
                                 )
                                 
-                                # Extract and save components
-                                processor = test_pipeline.tokenizer if hasattr(test_pipeline, 'tokenizer') else test_pipeline.image_processor
-                                model = test_pipeline.model
+                                self.current_pipeline = None
+                                self.current_tokenizer = None
                                 
-                                if hasattr(processor, 'save_pretrained'):
-                                    processor.save_pretrained(str(model_path))
-                                model.save_pretrained(str(model_path))
-                                
-                                progress.update(task1, completed=100)
-                                self.console.print(f"[green]✓ Windows fallback successful for Gemma 3[/green]")
-                                
-                                # Clean up
-                                del test_pipeline
-                                del processor
-                                del model
-                                
-                                return True
+                                self.console.print(f"[green]✓ Windows CPU fallback successful for {model_config.name}[/green]")
                                 
                             except Exception as fallback_error:
-                                self.console.print(f"[red]Windows fallback also failed: {fallback_error}[/red]")
-                                raise e
+                                self.logger.error(f"Windows fallback failed for Gemma 3: {fallback_error}")
+                                raise RuntimeError(f"Failed to load Gemma 3 on Windows: {e}")
                         else:
-                            raise e
+                            self.logger.error(f"Gemma 3 multimodal loading failed: {e}")
+                            raise
                 
                 elif is_legacy_gemma:
                     # Use text-generation pipeline for legacy Gemma models (non-multimodal)
@@ -683,31 +653,33 @@ class ModelManager:
                     is_smolvlm_model = "smolvlm" in model_config.hf_model_id.lower()
                     
                     if is_gemma3_multimodal:
-                        # Use pipeline approach for Gemma 3 multimodal models
+                        # Use direct approach for Gemma 3 multimodal models to avoid dtype serialization issues
                         try:
                             self.console.print(f"[blue]Loading {model_config.name} as multimodal model...[/blue]")
                             
                             if self._is_windows_system():
                                 self.console.print("[blue]Using Windows-optimized settings for Gemma 3...[/blue]")
                             
-                            # Determine best approach for Windows vs other platforms
-                            device = "cpu" if self._is_windows_system() and self.device == "cuda" else self.device
-                            dtype = torch.float32 if self._is_windows_system() else model_kwargs.get("torch_dtype", torch.bfloat16)
+                            # Load processor first
+                            self.current_processor = AutoProcessor.from_pretrained(str(model_path))
                             
-                            # Create pipeline for Gemma 3 multimodal
-                            self.current_pipeline = pipeline(
-                                "image-text-to-text",  # Correct task for Gemma 3 multimodal
-                                model=str(model_path),
-                                device=device,
-                                torch_dtype=dtype,
-                                model_kwargs={
-                                    "attn_implementation": "eager"  # More stable, especially on Windows, removed trust_remote_code to avoid duplicate parameter
-                                }
+                            # Load model with appropriate settings
+                            model_load_kwargs = {
+                                "torch_dtype": torch.float32 if self._is_windows_system() else torch.bfloat16,
+                                "attn_implementation": "eager"  # More stable, especially on Windows
+                            }
+                            
+                            # Add device map only if not on Windows CPU fallback
+                            if not (self._is_windows_system() and self.device == "cuda"):
+                                model_load_kwargs["device_map"] = "auto"
+                            
+                            self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
+                                str(model_path),
+                                **model_load_kwargs
                             )
                             
-                            # Extract processor and model from pipeline
-                            self.current_processor = self.current_pipeline.tokenizer if hasattr(self.current_pipeline, 'tokenizer') else self.current_pipeline.image_processor
-                            self.current_model = self.current_pipeline.model
+                            # For consistency, we don't use pipeline for Gemma 3 multimodal
+                            self.current_pipeline = None
                             self.current_tokenizer = None  # Gemma 3 multimodal uses processor, not tokenizer
                             
                             self.console.print(f"[green]✓ Successfully loaded {model_config.name} as multimodal model[/green]")
@@ -720,17 +692,16 @@ class ModelManager:
                                 
                                 try:
                                     # Force CPU mode for Windows
-                                    self.current_pipeline = pipeline(
-                                        "image-text-to-text",
-                                        model=str(model_path),
-                                        device="cpu",
+                                    self.current_processor = AutoProcessor.from_pretrained(str(model_path))
+                                    
+                                    self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
+                                        str(model_path),
                                         torch_dtype=torch.float32,
-                                        model_kwargs={"attn_implementation": "eager"},  # Removed trust_remote_code to avoid duplicate parameter
-                                        cache_dir=str(model_path)
+                                        attn_implementation="eager"
+                                        # No device_map for CPU fallback
                                     )
                                     
-                                    self.current_processor = self.current_pipeline.tokenizer if hasattr(self.current_pipeline, 'tokenizer') else self.current_pipeline.image_processor
-                                    self.current_model = self.current_pipeline.model
+                                    self.current_pipeline = None
                                     self.current_tokenizer = None
                                     
                                     self.console.print(f"[green]✓ Windows CPU fallback successful for {model_config.name}[/green]")
@@ -1036,21 +1007,41 @@ class ModelManager:
             # Replace the user_question placeholder in the prompt
             full_prompt = system_prompt.replace("{user_question}", user_prompt)
             
-            # For Gemma 3 multimodal, we can use the pipeline for text-only generation
-            # The pipeline handles the multimodal aspects internally
+            # Since we're using direct model loading instead of pipeline, process manually
+            # Prepare input using the processor
+            inputs = self.current_processor(
+                text=full_prompt,
+                images=None,  # Text-only input
+                return_tensors="pt"
+            )
+            
+            # Move inputs to the model's device
+            inputs = {k: v.to(self.current_model.device) for k, v in inputs.items() if v is not None}
+            
+            # Generate with appropriate parameters for Gemma 3
             with torch.inference_mode():
-                # Use text-only input with the image-text-to-text pipeline
-                response = self.current_pipeline(
-                    full_prompt,
+                generated_ids = self.current_model.generate(
+                    **inputs,
                     max_new_tokens=200,
                     temperature=0.7,
                     top_p=0.9,
                     do_sample=True,
                     repetition_penalty=1.1,
-                    return_full_text=False
+                    pad_token_id=self.current_processor.tokenizer.pad_token_id,
+                    eos_token_id=self.current_processor.tokenizer.eos_token_id
                 )
             
-            generated_text = response[0]["generated_text"].strip()
+            # Decode the generated text
+            generated_texts = self.current_processor.decode(
+                generated_ids[0],
+                skip_special_tokens=True
+            )
+            
+            # Remove the original prompt from the generated text
+            if full_prompt in generated_texts:
+                generated_text = generated_texts.replace(full_prompt, "").strip()
+            else:
+                generated_text = generated_texts.strip()
             
             # Extract SQL from the response
             sql_query = self._clean_generated_sql(generated_text)
