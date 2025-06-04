@@ -209,8 +209,10 @@ class ModelManager:
                     # Use direct download approach for Gemma 3 multimodal models to avoid dtype serialization issues
                     self.console.print(f"[blue]Downloading Gemma 3 multimodal model components directly...[/blue]")
                     
+                    # Silently optimize for Windows if needed
                     if self._is_windows_system():
-                        self.console.print("[blue]Using Windows-optimized settings for Gemma 3...[/blue]")
+                        # Use Windows-optimized settings without additional console output
+                        pass
                     
                     task1 = progress.add_task(f"Downloading {model_config.name} components...", total=100)
                     
@@ -250,6 +252,10 @@ class ModelManager:
                             "local_files_only": False,
                             "resume_download": True
                         }
+                        
+                        # Add device_map for CUDA/MPS on all platforms including Windows
+                        if self.device != "cpu":
+                            model_kwargs_for_download["device_map"] = "auto"
                         
                         # Use Gemma3ForConditionalGeneration for Gemma 3 models
                         model = Gemma3ForConditionalGeneration.from_pretrained(
@@ -342,7 +348,7 @@ class ModelManager:
                                 return True
                                 
                             except Exception as fallback_error:
-                                self.console.print(f"[red]Windows fallback also failed: {fallback_error}[/red]")
+                                self.logger.error(f"Windows fallback also failed: {fallback_error}")
                                 raise e
                         else:
                             raise e
@@ -615,9 +621,13 @@ class ModelManager:
         # Windows-specific optimizations
         if self._is_windows_system():
             if is_gemma3_multimodal:
-                # Use more conservative settings for Gemma 3 on Windows
+                # Use Windows-optimized settings for Gemma 3, but still allow CUDA if available
                 config["torch_dtype"] = torch.float32  # More stable on Windows
-                config["device_map"] = None  # Let pipeline handle device mapping
+                if self.device == "cuda":
+                    # Use CUDA on Windows if available
+                    config["device_map"] = "auto"
+                else:
+                    config["device_map"] = None  # Let pipeline handle device mapping for CPU
                 config["attn_implementation"] = "eager"  # Most stable attention
                 return config
         
@@ -642,7 +652,8 @@ class ModelManager:
                 config["torch_dtype"] = torch.bfloat16 if (is_legacy_gemma or is_gemma3_multimodal) else torch.float16
         
         # Set device map for auto distribution - let accelerate handle device placement
-        if self.device != "cpu" and not self._is_windows_system():
+        if self.device != "cpu":
+            # Use device_map for CUDA/MPS on all platforms, including Windows
             config["device_map"] = "auto"
         
         # Add attention implementation for Gemma models to avoid conflicts
@@ -738,8 +749,13 @@ class ModelManager:
                         try:
                             self.console.print(f"[blue]Loading {model_config.name} as Gemma 3 model...[/blue]")
                             
-                            if self._is_windows_system():
-                                self.console.print("[blue]Using Windows-optimized settings for Gemma 3...[/blue]")
+                            # Silently detect and use best available device on Windows
+                            if self._is_windows_system() and self.device == "cuda":
+                                # Use CUDA on Windows without extra logging to keep CLI clean
+                                pass
+                            elif self._is_windows_system():
+                                # Use CPU on Windows if CUDA not available
+                                pass
                             
                             # Try to load processor first, fallback to tokenizer
                             processor = None
@@ -762,8 +778,8 @@ class ModelManager:
                                 "attn_implementation": "eager"  # More stable, especially on Windows
                             }
                             
-                            # Add device map only if not on Windows CPU fallback
-                            if not (self._is_windows_system() and self.device == "cuda"):
+                            # Use device_map for CUDA/MPS on all platforms including Windows
+                            if self.device != "cpu":
                                 model_load_kwargs["device_map"] = "auto"
                             
                             self.current_model = Gemma3ForConditionalGeneration.from_pretrained(
