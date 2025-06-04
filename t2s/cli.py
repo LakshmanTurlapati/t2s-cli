@@ -5,6 +5,7 @@ import sys
 from typing import Optional
 import logging
 import re
+import platform
 
 import click
 from rich.console import Console
@@ -18,6 +19,7 @@ from .core.config import Config
 from .models.model_manager import ModelManager
 from .database.db_manager import DatabaseManager
 from .ui.ascii_art import T2SArt
+from . import __version__  # Import version from package
 
 
 def simple_select(title: str, choices: list, default_index: int = 0) -> str:
@@ -995,7 +997,7 @@ class T2SCLI:
 def main(ctx, version):
     """T2S - Text to SQL CLI tool."""
     if version:
-        click.echo("T2S v0.1.0")
+        click.echo(f"T2S v{__version__}")
         click.echo("Created by Lakshman Turlapati")
         return
     

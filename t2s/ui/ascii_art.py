@@ -5,6 +5,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.align import Align
 import random
+from .. import __version__  # Import version from package
 
 
 class T2SArt:
@@ -274,7 +275,7 @@ class T2SArt:
     def get_footer(cls) -> Text:
         """Get the footer text."""
         text = Text()
-        text.append("T2S v0.1.0", style="dim")
+        text.append(f"T2S v{__version__}", style="dim")
         text.append(" | ", style="dim")
         text.append("Created by Lakshman Turlapati", style="dim cyan")
         text.append(" | ", style="dim")
