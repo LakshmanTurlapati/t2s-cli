@@ -85,8 +85,15 @@ class ModelManager:
         
         # Detect virtualized environment early
         self.is_virtualized = self._is_virtualized_environment()
+        
+        # Show platform information
+        os_name = platform.system()
+        os_version = platform.release()
         if self.is_virtualized:
-            self.console.print(f"[yellow]⚠️  Virtual Machine detected - applying VM-optimized settings[/yellow]")
+            platform_info = f"{os_name} {os_version} (Virtual Machine)"
+        else:
+            platform_info = f"{os_name} {os_version}"
+        self.console.print(f"[blue]Platform: {platform_info}[/blue]")
         
         # Setup device with detailed Windows GPU detection
         self.device = self._get_optimal_device()
@@ -233,7 +240,8 @@ class ModelManager:
             import os
             
             # Check for common VM indicators
-            vm_indicators = []
+            vm_detected = False
+            vm_type = ""
             
             # Check system info for VM signatures
             try:
@@ -242,20 +250,24 @@ class ModelManager:
                     result = subprocess.run(['system_profiler', 'SPHardwareDataType'], 
                                           capture_output=True, text=True, timeout=5)
                     if 'Parallels' in result.stdout or 'Virtual' in result.stdout:
-                        vm_indicators.append("Parallels Desktop detected")
+                        vm_detected = True
+                        vm_type = "Parallels Desktop"
                     
                     # Check for other VM signatures
-                    result = subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'], 
-                                          capture_output=True, text=True, timeout=5)
-                    if any(vm_name in result.stdout.lower() for vm_name in ['vmware', 'virtualbox', 'parallels', 'qemu']):
-                        vm_indicators.append("VM CPU signature detected")
+                    if not vm_detected:
+                        result = subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'], 
+                                              capture_output=True, text=True, timeout=5)
+                        if any(vm_name in result.stdout.lower() for vm_name in ['vmware', 'virtualbox', 'qemu']):
+                            vm_detected = True
+                            vm_type = "Virtual Machine"
                         
                 elif platform.system() == "Windows":
                     # Check for Windows VM indicators
                     result = subprocess.run(['wmic', 'computersystem', 'get', 'model'], 
                                           capture_output=True, text=True, timeout=5)
                     if any(vm_name in result.stdout.lower() for vm_name in ['vmware', 'virtualbox', 'parallels', 'virtual']):
-                        vm_indicators.append("Windows VM detected")
+                        vm_detected = True
+                        vm_type = "Virtual Machine"
                         
                 elif platform.system() == "Linux":
                     # Check for Linux VM indicators
@@ -263,7 +275,8 @@ class ModelManager:
                         with open('/proc/cpuinfo', 'r') as f:
                             cpuinfo = f.read().lower()
                             if any(vm_name in cpuinfo for vm_name in ['vmware', 'virtualbox', 'qemu', 'kvm']):
-                                vm_indicators.append("Linux VM detected")
+                                vm_detected = True
+                                vm_type = "Virtual Machine"
                 
             except Exception:
                 pass
@@ -271,22 +284,24 @@ class ModelManager:
             # Additional checks
             try:
                 # Check environment variables
-                vm_env_vars = ['PARALLELS_TOOLS_VERSION', 'VMWARE_VERSION', 'VBOX_VERSION']
-                for var in vm_env_vars:
+                vm_env_vars = {'PARALLELS_TOOLS_VERSION': 'Parallels Desktop', 
+                              'VMWARE_VERSION': 'VMware', 
+                              'VBOX_VERSION': 'VirtualBox'}
+                for var, name in vm_env_vars.items():
                     if os.getenv(var):
-                        vm_indicators.append(f"VM environment variable {var} detected")
+                        vm_detected = True
+                        vm_type = name
+                        break
                         
             except Exception:
                 pass
             
-            if vm_indicators:
-                self.console.print(f"[yellow]🔍 Virtual Machine detected: {', '.join(vm_indicators)}[/yellow]")
+            if vm_detected:
                 return True
                 
             return False
             
-        except Exception as e:
-            self.console.print(f"[yellow]Could not detect virtualization: {e}[/yellow]")
+        except Exception:
             return False
     
     def _setup_windows_env_for_gemma(self):
@@ -862,7 +877,6 @@ class ModelManager:
         
         # VM-specific optimizations
         if self.is_virtualized:
-            self.console.print(f"[yellow]🔧 Applying VM-optimized model settings[/yellow]")
             # Force more conservative settings for VMs
             config["torch_dtype"] = torch.float32  # More stable in VMs
             config["low_cpu_mem_usage"] = True
@@ -876,7 +890,6 @@ class ModelManager:
             # Set conservative thread counts for VMs
             torch.set_num_threads(2)  # Conservative threading in VMs
             
-            self.console.print(f"[green]✓ VM settings: float32, no device mapping, conservative threading[/green]")
             return config
         
         # Windows-specific optimizations - AGGRESSIVE GPU USAGE
