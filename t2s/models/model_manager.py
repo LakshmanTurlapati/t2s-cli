@@ -1414,11 +1414,23 @@ class ModelManager:
                             # Apply our validation and fixing
                             pipeline_inputs = self._validate_input_tensors(pipeline_inputs)
                             
-                            # Ensure tensors are on the right device
-                            if self.current_pipeline.device != -1:  # GPU
-                                pipeline_inputs = self._safe_to_device(pipeline_inputs, torch.device(f"cuda:{self.current_pipeline.device}"))
-                            
-                            self.console.print(f"[green]Pipeline input shapes: input_ids={pipeline_inputs['input_ids'].shape}, attention_mask={pipeline_inputs.get('attention_mask', 'None')}[/green]")
+                            # Ensure tensors are on the right device - fix for CPU/GPU compatibility
+                            try:
+                                # Check if pipeline is on GPU (device is numeric) or CPU (device is -1 or string)
+                                if isinstance(self.current_pipeline.device, int) and self.current_pipeline.device >= 0:
+                                    # GPU device
+                                    target_device = torch.device(f"cuda:{self.current_pipeline.device}")
+                                    pipeline_inputs = self._safe_to_device(pipeline_inputs, target_device)
+                                elif hasattr(self.current_pipeline.model, 'device'):
+                                    # Use model's device directly
+                                    target_device = self.current_pipeline.model.device
+                                    pipeline_inputs = self._safe_to_device(pipeline_inputs, target_device)
+                                # else: leave tensors on CPU (default)
+                                    
+                                self.console.print(f"[green]Pipeline input shapes: input_ids={pipeline_inputs['input_ids'].shape}, attention_mask={pipeline_inputs.get('attention_mask', 'None')}[/green]")
+                            except Exception as device_error:
+                                self.console.print(f"[yellow]Device handling warning: {device_error}, using CPU[/yellow]")
+                                # Continue with CPU tensors
                             
                             # Use the model directly with our validated inputs instead of pipeline
                             with torch.no_grad():
