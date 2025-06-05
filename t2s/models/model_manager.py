@@ -106,10 +106,6 @@ class ModelManager:
         if torch.cuda.is_available():
             device_count = torch.cuda.device_count()
             if device_count > 0:
-                # Get GPU info for Windows
-                gpu_name = torch.cuda.get_device_name(0)
-                gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
-                
                 # Force CUDA device selection
                 device = "cuda"
                 
@@ -119,11 +115,6 @@ class ModelManager:
                         # Test CUDA functionality
                         test_tensor = torch.tensor([1.0]).cuda()
                         test_result = test_tensor.cpu()
-                        
-                        self.console.print(f"[green]✓ Windows NVIDIA GPU detected and functional![/green]")
-                        self.console.print(f"[blue]GPU: {gpu_name} ({gpu_memory:.1f} GB VRAM)[/blue]")
-                        self.console.print(f"[blue]CUDA devices available: {device_count}[/blue]")
-                        
                         return device
                         
                     except Exception as e:
@@ -202,27 +193,27 @@ class ModelManager:
             return False
     
     def _report_device_info(self):
-        """Report detailed device information to the user."""
-        self.console.print(f"[blue]Using device: {self.device.upper()}[/blue]")
-        
+        """Report device information to the user."""        
         if self.device == "cuda":
             if torch.cuda.is_available():
                 device_count = torch.cuda.device_count()
-                for i in range(device_count):
-                    gpu_name = torch.cuda.get_device_name(i)
-                    gpu_props = torch.cuda.get_device_properties(i)
-                    gpu_memory = gpu_props.total_memory / (1024**3)  # GB
-                    
-                    self.console.print(f"[green]GPU {i}: {gpu_name} ({gpu_memory:.1f} GB VRAM)[/green]")
-                    
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+                self.console.print(f"[blue]Device: {self.device.upper()} - {gpu_name} ({gpu_memory:.1f} GB)[/blue]")
+            else:
+                self.console.print(f"[blue]Device: {self.device.upper()}[/blue]")
+                
+        elif self.device == "mps":
+            self.console.print(f"[blue]Device: {self.device.upper()} (Apple Silicon)[/blue]")
+            
         elif self.device == "cpu":
+            # Only show CPU warnings when there might be GPU available
             if self._is_windows_system():
-                # Check if this is a PyTorch CUDA issue
                 cuda_version = torch.version.cuda
-                if cuda_version is None:
-                    self.console.print(f"[yellow]⚠️  Running on CPU - PyTorch not built with CUDA[/yellow]")
-                else:
-                    self.console.print(f"[yellow]⚠️  Running on CPU - GPU not detected[/yellow]")
+                if cuda_version is None and self._has_nvidia_gpu():
+                    # GPU available but PyTorch doesn't have CUDA - this was already handled in _get_optimal_device
+                    pass
+            self.console.print(f"[blue]Device: {self.device.upper()}[/blue]")
     
     def _is_gemma3_multimodal(self, model_config) -> bool:
         """Check if this is a Gemma 3 multimodal model."""
