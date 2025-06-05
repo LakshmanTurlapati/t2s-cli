@@ -83,6 +83,11 @@ class ModelManager:
         self.current_processor = None
         self.hf_api = HfApi()
         
+        # Detect virtualized environment early
+        self.is_virtualized = self._is_virtualized_environment()
+        if self.is_virtualized:
+            self.console.print(f"[yellow]⚠️  Virtual Machine detected - applying VM-optimized settings[/yellow]")
+        
         # Setup device with detailed Windows GPU detection
         self.device = self._get_optimal_device()
         self._report_device_info()
@@ -220,6 +225,69 @@ class ModelManager:
     def _is_windows_system(self) -> bool:
         """Check if running on Windows."""
         return platform.system() == "Windows"
+    
+    def _is_virtualized_environment(self) -> bool:
+        """Detect if running in a virtualized environment (VM)."""
+        try:
+            import subprocess
+            import os
+            
+            # Check for common VM indicators
+            vm_indicators = []
+            
+            # Check system info for VM signatures
+            try:
+                if platform.system() == "Darwin":  # macOS
+                    # Check for Parallels Desktop
+                    result = subprocess.run(['system_profiler', 'SPHardwareDataType'], 
+                                          capture_output=True, text=True, timeout=5)
+                    if 'Parallels' in result.stdout or 'Virtual' in result.stdout:
+                        vm_indicators.append("Parallels Desktop detected")
+                    
+                    # Check for other VM signatures
+                    result = subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'], 
+                                          capture_output=True, text=True, timeout=5)
+                    if any(vm_name in result.stdout.lower() for vm_name in ['vmware', 'virtualbox', 'parallels', 'qemu']):
+                        vm_indicators.append("VM CPU signature detected")
+                        
+                elif platform.system() == "Windows":
+                    # Check for Windows VM indicators
+                    result = subprocess.run(['wmic', 'computersystem', 'get', 'model'], 
+                                          capture_output=True, text=True, timeout=5)
+                    if any(vm_name in result.stdout.lower() for vm_name in ['vmware', 'virtualbox', 'parallels', 'virtual']):
+                        vm_indicators.append("Windows VM detected")
+                        
+                elif platform.system() == "Linux":
+                    # Check for Linux VM indicators
+                    if os.path.exists('/proc/cpuinfo'):
+                        with open('/proc/cpuinfo', 'r') as f:
+                            cpuinfo = f.read().lower()
+                            if any(vm_name in cpuinfo for vm_name in ['vmware', 'virtualbox', 'qemu', 'kvm']):
+                                vm_indicators.append("Linux VM detected")
+                
+            except Exception:
+                pass
+            
+            # Additional checks
+            try:
+                # Check environment variables
+                vm_env_vars = ['PARALLELS_TOOLS_VERSION', 'VMWARE_VERSION', 'VBOX_VERSION']
+                for var in vm_env_vars:
+                    if os.getenv(var):
+                        vm_indicators.append(f"VM environment variable {var} detected")
+                        
+            except Exception:
+                pass
+            
+            if vm_indicators:
+                self.console.print(f"[yellow]🔍 Virtual Machine detected: {', '.join(vm_indicators)}[/yellow]")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            self.console.print(f"[yellow]Could not detect virtualization: {e}[/yellow]")
+            return False
     
     def _setup_windows_env_for_gemma(self):
         """Setup Windows-specific environment variables for Gemma models."""
@@ -792,6 +860,25 @@ class ModelManager:
         # Check if this is a SmolVLM model that needs multimodal handling
         is_smolvlm_model = "smolvlm" in model_config.hf_model_id.lower()
         
+        # VM-specific optimizations
+        if self.is_virtualized:
+            self.console.print(f"[yellow]🔧 Applying VM-optimized model settings[/yellow]")
+            # Force more conservative settings for VMs
+            config["torch_dtype"] = torch.float32  # More stable in VMs
+            config["low_cpu_mem_usage"] = True
+            config["device_map"] = None  # Avoid device mapping issues in VMs
+            config["use_cache"] = False  # Disable caching to prevent state issues
+            
+            # VM-specific memory and processing settings
+            if hasattr(torch.backends, 'mkldnn'):
+                torch.backends.mkldnn.enabled = False  # Disable MKL-DNN for VM compatibility
+            
+            # Set conservative thread counts for VMs
+            torch.set_num_threads(2)  # Conservative threading in VMs
+            
+            self.console.print(f"[green]✓ VM settings: float32, no device mapping, conservative threading[/green]")
+            return config
+        
         # Windows-specific optimizations - AGGRESSIVE GPU USAGE
         if self._is_windows_system() and self.device == "cuda":
             if is_gemma3_multimodal:
@@ -1211,9 +1298,28 @@ class ModelManager:
         """Validate and fix tensor indices and shapes to prevent device-side asserts and shape mismatches."""
         validated_inputs = {}
         
+        # Check if running in VM for enhanced validation
+        is_vm = self.is_virtualized
+        
         # First pass: collect all tensors and validate basic properties
         for key, value in inputs.items():
             if isinstance(value, torch.Tensor):
+                # VM-specific tensor fixes
+                if is_vm:
+                    # Force CPU-contiguous memory layout for VM compatibility
+                    if value.device.type != 'cpu':
+                        # Temporarily move to CPU for validation, then back
+                        cpu_value = value.cpu()
+                        if not cpu_value.is_contiguous():
+                            cpu_value = cpu_value.contiguous()
+                        value = cpu_value.to(value.device)
+                    else:
+                        if not value.is_contiguous():
+                            value = value.contiguous()
+                    
+                    # VM: Force explicit clone to prevent memory address issues
+                    value = value.clone()
+                
                 # Fix potential index out of bounds issues
                 if key in ['input_ids', 'attention_mask']:
                     # Ensure indices are within valid range for vocabulary
@@ -1243,40 +1349,61 @@ class ModelManager:
             if input_ids.shape != attention_mask.shape:
                 self.console.print(f"[yellow]Fixing tensor shape mismatch: input_ids {input_ids.shape} vs attention_mask {attention_mask.shape}[/yellow]")
                 
-                # Get the target length (use the longer of the two)
-                input_ids_len = input_ids.shape[-1] if len(input_ids.shape) > 0 else 0
-                attention_mask_len = attention_mask.shape[-1] if len(attention_mask.shape) > 0 else 0
-                
-                if input_ids_len > attention_mask_len:
-                    # Extend attention_mask to match input_ids
-                    target_length = input_ids_len
-                    if len(attention_mask.shape) == 2:  # [batch_size, seq_len]
-                        batch_size = attention_mask.shape[0]
-                        padding_length = target_length - attention_mask_len
-                        padding = torch.ones(batch_size, padding_length, dtype=attention_mask.dtype, device=attention_mask.device)
-                        validated_inputs['attention_mask'] = torch.cat([attention_mask, padding], dim=-1)
-                    elif len(attention_mask.shape) == 1:  # [seq_len]
-                        padding_length = target_length - attention_mask_len
-                        padding = torch.ones(padding_length, dtype=attention_mask.dtype, device=attention_mask.device)
-                        validated_inputs['attention_mask'] = torch.cat([attention_mask, padding], dim=-1)
+                # VM-specific: Use more conservative approach
+                if is_vm:
+                    # In VMs, be more aggressive about ensuring exact matches
+                    input_ids_len = input_ids.shape[-1] if len(input_ids.shape) > 0 else 0
+                    attention_mask_len = attention_mask.shape[-1] if len(attention_mask.shape) > 0 else 0
+                    
+                    # Always truncate to the shorter length in VMs for stability
+                    target_length = min(input_ids_len, attention_mask_len)
+                    
+                    if len(input_ids.shape) == 2:  # [batch_size, seq_len]
+                        validated_inputs['input_ids'] = input_ids[:, :target_length].contiguous().clone()
+                        validated_inputs['attention_mask'] = attention_mask[:, :target_length].contiguous().clone()
+                    elif len(input_ids.shape) == 1:  # [seq_len]
+                        validated_inputs['input_ids'] = input_ids[:target_length].contiguous().clone()
+                        validated_inputs['attention_mask'] = attention_mask[:target_length].contiguous().clone()
+                    
+                    self.console.print(f"[green]✓ VM-optimized: Truncated to {target_length} tokens for stability[/green]")
+                    
+                else:
+                    # Original logic for non-VM environments
+                    # Get the target length (use the longer of the two)
+                    input_ids_len = input_ids.shape[-1] if len(input_ids.shape) > 0 else 0
+                    attention_mask_len = attention_mask.shape[-1] if len(attention_mask.shape) > 0 else 0
+                    
+                    if input_ids_len > attention_mask_len:
+                        # Extend attention_mask to match input_ids
+                        target_length = input_ids_len
+                        if len(attention_mask.shape) == 2:  # [batch_size, seq_len]
+                            batch_size = attention_mask.shape[0]
+                            padding_length = target_length - attention_mask_len
+                            padding = torch.ones(batch_size, padding_length, dtype=attention_mask.dtype, device=attention_mask.device)
+                            validated_inputs['attention_mask'] = torch.cat([attention_mask, padding], dim=-1)
+                        elif len(attention_mask.shape) == 1:  # [seq_len]
+                            padding_length = target_length - attention_mask_len
+                            padding = torch.ones(padding_length, dtype=attention_mask.dtype, device=attention_mask.device)
+                            validated_inputs['attention_mask'] = torch.cat([attention_mask, padding], dim=-1)
                         
-                elif attention_mask_len > input_ids_len:
-                    # Truncate attention_mask to match input_ids
-                    target_length = input_ids_len
-                    if len(attention_mask.shape) == 2:  # [batch_size, seq_len]
-                        validated_inputs['attention_mask'] = attention_mask[:, :target_length]
-                    elif len(attention_mask.shape) == 1:  # [seq_len]
-                        validated_inputs['attention_mask'] = attention_mask[:target_length]
-                
-                self.console.print(f"[green]✓ Fixed tensor shapes: input_ids {validated_inputs['input_ids'].shape} = attention_mask {validated_inputs['attention_mask'].shape}[/green]")
+                    elif attention_mask_len > input_ids_len:
+                        # Truncate attention_mask to match input_ids
+                        target_length = input_ids_len
+                        if len(attention_mask.shape) == 2:  # [batch_size, seq_len]
+                            validated_inputs['attention_mask'] = attention_mask[:, :target_length]
+                        elif len(attention_mask.shape) == 1:  # [seq_len]
+                            validated_inputs['attention_mask'] = attention_mask[:target_length]
+                    
+                    self.console.print(f"[green]✓ Fixed tensor shapes: input_ids {validated_inputs['input_ids'].shape} = attention_mask {validated_inputs['attention_mask'].shape}[/green]")
         
         # Third pass: Ensure reasonable sequence lengths to prevent memory issues
         if 'input_ids' in validated_inputs:
             input_ids = validated_inputs['input_ids']
-            max_length = 4096  # Conservative limit for most models
+            # VM-specific: Use smaller max length for stability
+            max_length = 2048 if is_vm else 4096  # More conservative in VMs
             
             if input_ids.shape[-1] > max_length:
-                self.console.print(f"[yellow]Truncating input sequence from {input_ids.shape[-1]} to {max_length} tokens[/yellow]")
+                self.console.print(f"[yellow]Truncating input sequence from {input_ids.shape[-1]} to {max_length} tokens (VM-optimized: {is_vm})[/yellow]")
                 
                 if len(input_ids.shape) == 2:  # [batch_size, seq_len]
                     validated_inputs['input_ids'] = input_ids[:, :max_length]
@@ -1290,6 +1417,13 @@ class ModelManager:
                         validated_inputs['attention_mask'] = attention_mask[:, :max_length]
                     elif len(attention_mask.shape) == 1:  # [seq_len]
                         validated_inputs['attention_mask'] = attention_mask[:max_length]
+        
+        # VM-specific: Final validation pass
+        if is_vm:
+            # Ensure all tensors are properly cloned and contiguous
+            for key, value in validated_inputs.items():
+                if isinstance(value, torch.Tensor):
+                    validated_inputs[key] = value.contiguous().clone()
         
         return validated_inputs
 
@@ -1517,6 +1651,26 @@ class ModelManager:
                         raise e
             
             generated_text = response[0]["generated_text"].strip()
+            
+            # CRITICAL: Reset model state after generation to prevent cache conflicts
+            try:
+                self.current_pipeline.model.eval()  # Reset model to evaluation mode
+                
+                # Clear any residual cache/state
+                if hasattr(self.current_pipeline.model, '_cache'):
+                    self.current_pipeline.model._cache = None
+                if hasattr(self.current_pipeline.model, 'past_key_values'):
+                    self.current_pipeline.model.past_key_values = None
+                    
+                # Force garbage collection to clear any lingering tensors
+                import gc
+                gc.collect()
+                
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    
+            except Exception as reset_error:
+                self.console.print(f"[yellow]Warning: Could not reset model state: {reset_error}[/yellow]")
             
             # Extract SQL from the response
             sql_query = self._clean_generated_sql(generated_text)
@@ -1799,6 +1953,26 @@ class ModelManager:
                 generated_text = generated_texts.replace(full_prompt, "").strip()
             else:
                 generated_text = generated_texts.strip()
+            
+            # CRITICAL: Reset model state after generation to prevent cache conflicts
+            try:
+                self.current_model.eval()  # Reset model to evaluation mode
+                
+                # Clear any residual cache/state
+                if hasattr(self.current_model, '_cache'):
+                    self.current_model._cache = None
+                if hasattr(self.current_model, 'past_key_values'):
+                    self.current_model.past_key_values = None
+                    
+                # Force garbage collection to clear any lingering tensors
+                import gc
+                gc.collect()
+                
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    
+            except Exception as reset_error:
+                self.console.print(f"[yellow]Warning: Could not reset Gemma 3 model state: {reset_error}[/yellow]")
             
             # Extract SQL from the response
             sql_query = self._clean_generated_sql(generated_text)
