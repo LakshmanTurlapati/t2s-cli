@@ -1434,9 +1434,25 @@ class ModelManager:
                             
                             # Use the model directly with our validated inputs instead of pipeline
                             with torch.no_grad():
+                                # Clear any cached states that might cause shape mismatches
+                                if hasattr(self.current_pipeline.model, 'generation_config'):
+                                    # Reset generation config to clear any cached sequences
+                                    self.current_pipeline.model.generation_config.past_key_values = None
+                                    
+                                # Ensure no past_key_values are passed (common cause of shape mismatch)
+                                generation_params_clean = generation_params.copy()
+                                generation_params_clean['past_key_values'] = None
+                                generation_params_clean['use_cache'] = False  # Disable caching to prevent shape issues
+                                
+                                # Clear any existing model cache
+                                if hasattr(self.current_pipeline.model, '_cache'):
+                                    self.current_pipeline.model._cache = None
+                                    
+                                self.console.print(f"[blue]Using model.generate with cleaned parameters and no cache[/blue]")
+                                
                                 generated_ids = self.current_pipeline.model.generate(
                                     **pipeline_inputs,
-                                    **generation_params
+                                    **generation_params_clean
                                 )
                                 
                                 # Decode using the tokenizer
