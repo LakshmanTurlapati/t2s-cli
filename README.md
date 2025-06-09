@@ -1,7 +1,7 @@
 
 # T2S - Text to SQL CLI
 
-![PyPI version](https://badge.fury.io/py/t2s-cli.svg)
+[![PyPI version](https://img.shields.io/pypi/v/t2s-cli.svg)](https://pypi.org/project/t2s-cli/)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
 

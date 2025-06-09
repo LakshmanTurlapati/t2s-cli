@@ -1,172 +1,247 @@
-# GitHub Actions Workflows for T2S CLI
 
-This directory contains GitHub Actions workflows for automating the build, test, and release process of the T2S CLI package.
+# T2S - Text to SQL CLI
 
-## Workflows Overview
+[![PyPI version](https://img.shields.io/pypi/v/t2s-cli.svg)](https://pypi.org/project/t2s-cli/)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
 
-### 1. Continuous Integration (`ci.yml`)
-**Triggers:** Push to main/master/develop, Pull Requests
-**Purpose:** Run tests, linting, and security scans on every code change
+A powerful, privacy-first terminal-based Text-to-SQL converter that transforms natural language queries into SQL statements using state-of-the-art AI models—all running locally on your machine. Because your database deserves the best, and so does your privacy.
 
-**Jobs:**
-- **Test**: Runs on Python 3.9-3.12 across Ubuntu, Windows, and macOS
-- **Lint**: Code quality checks with Black, isort, flake8, and mypy
-- **Security**: Vulnerability scanning with safety and bandit
+Created by Lakshman Turlapati
 
-### 2. Build and Publish (`build-and-publish.yml`)
-**Triggers:** Push to main, Pull Requests, Releases
-**Purpose:** Comprehensive testing and publishing pipeline
+## Privacy & Security First
 
-**Jobs:**
-- **Test**: Cross-platform testing with AI model dependencies
-- **Build**: Package building and validation
-- **Publish-test**: Auto-publish to Test PyPI on main branch pushes
-- **Publish**: Publish to PyPI on releases
-- **Security-scan**: Additional security checks
-- **Code-quality**: Extended code quality analysis
+Your data stays where it belongs—on your machine. T2S operates entirely locally, free from external APIs, delivering uncompromised privacy and security. Ideal for sensitive enterprise databases and personal projects alike.
 
-### 3. Release (`release.yml`)
-**Triggers:** GitHub releases, Manual workflow dispatch
-**Purpose:** Streamlined release and publishing process
+## Features
 
-**Jobs:**
-- **Build**: Create source distribution and wheel
-- **Publish-to-testpypi**: Optional Test PyPI deployment
-- **Publish-to-pypi**: Production PyPI deployment
-- **Create-github-release**: Automated GitHub release creation
+T2S is packed with capabilities to streamline your database querying experience:
 
-## Setup Instructions
+### Advanced AI Workflows
+* Multiple specialized AI workflows tailored to diverse use cases
+* Intelligent model selection based on your hardware and accuracy requirements
+* Automatic schema analysis and query optimization
+* Support for complex multi-table joins and aggregations
 
-### 1. Repository Secrets
+### Smart Database Integration
+* Auto-detection of local databases (SQLite, PostgreSQL, MySQL)
+* Real-time schema analysis and intelligent table selection
+* Query validation and automatic error correction
+* Elegant result visualization in the terminal
 
-You need to configure these secrets in your GitHub repository:
+### Beautiful Terminal Experience
+* Rich ASCII art branding paired with an intuitive interface
+* Interactive configuration with memory compatibility warnings
+* Real-time loading animations and progress indicators
+* Syntax highlighting for SQL queries and results
 
-#### For PyPI Publishing:
-Go to **Settings → Secrets and variables → Actions** and add:
+### Enterprise-Ready
+* Fully offline operation—no internet required post-setup
+* Local model storage and management
+* Cross-platform support (macOS, Windows, Linux)
+* Memory-aware model recommendations
 
-- `PYPI_API_TOKEN`: Your PyPI API token
-- `TEST_PYPI_API_TOKEN`: Your Test PyPI API token
+## AI Model Recommendations
 
-#### Getting API Tokens:
+Choosing the right AI model is key to unlocking T2S’s full potential. Here’s how to pick one that fits your needs:
 
-**PyPI Token:**
-1. Go to https://pypi.org/manage/account/token/
-2. Create a new API token with scope "Entire account"
-3. Copy the token (starts with `pypi-`)
+### For Best Results (95%+ Accuracy)
+* **Gemma 3 (12B)** - Ideal for production environments and complex queries
+* **Defog SQLCoder (7B)** - A specialized SQL model, perfect for technical users
 
-**Test PyPI Token:**
-1. Go to https://test.pypi.org/manage/account/token/
-2. Create a new API token with scope "Entire account"  
-3. Copy the token (starts with `pypi-`)
+### For Most Users (80-90% Accuracy)
+* **Gemma 3 (4B)** - Recommended for 95% of users, striking a balance between accuracy and performance
+    * Runs efficiently on most modern hardware with impressive results
 
-### 2. Environment Protection (Optional but Recommended)
+### For Experimentation (40-60% Accuracy)
+* **SmolVLM (500M)** - Ultra-lightweight and runs on any computer
+    * Great for learning, testing, and resource-limited setups
 
-For additional security, set up environment protection:
+T2S includes memory compatibility warnings to guide you toward the best model for your system.
 
-1. Go to **Settings → Environments**
-2. Create environments: `pypi` and `testpypi`
-3. Add required reviewers for production deployments
-4. Configure environment secrets if you prefer environment-specific tokens
+## Installation
 
-### 3. Branch Protection
+### Quick Start
+```bash
+pip install t2s-cli
+````
 
-Consider setting up branch protection rules:
+### For Gemma Model Support
 
-1. Go to **Settings → Branches**
-2. Add rule for `main` branch
-3. Require status checks to pass before merging
-4. Select relevant workflow checks
+Some models require additional dependencies:
 
-## Usage
+```bash
+# Option 1: Install with Gemma support
+pip install t2s-cli[gemma]
 
-### Running Tests
-Tests run automatically on every push and pull request. The CI workflow will:
-- Test across multiple Python versions and operating systems
-- Install AI model dependencies (including sentencepiece for Gemma models)
-- Verify package imports and CLI functionality
-- Run code quality and security checks
+# Option 2: For all features
+pip install t2s-cli[all]
+```
 
-### Publishing Releases
+### macOS Users (if needed)
 
-#### Method 1: GitHub Releases (Recommended)
-1. Go to **Releases** in your GitHub repository
-2. Click **Create a new release**
-3. Choose a tag version (e.g., `v0.1.1`)
-4. Add release notes
-5. Click **Publish release**
-6. The package will automatically be built and published to PyPI
+```bash
+# If SentencePiece build issues arise
+brew install sentencepiece protobuf
+pip install t2s-cli
+```
 
-#### Method 2: Manual Workflow Dispatch
-1. Go to **Actions** tab
-2. Select "Release and Publish" workflow
-3. Click **Run workflow**
-4. Choose options (Test PyPI vs PyPI)
-5. Click **Run workflow**
+## Getting Started
 
-### Testing Releases
-To test your package before production release:
-1. Use the manual workflow dispatch with "Deploy to Test PyPI" checked
-2. Install from Test PyPI: `pip install --index-url https://test.pypi.org/simple/ t2s-cli`
-3. Test functionality, then proceed with production release
+### Launch T2S
 
-## Workflow Features
+```bash
+t2s
+```
 
-### AI Model Dependencies
-The workflows handle the special requirements for AI models:
-- **macOS**: Installs sentencepiece and protobuf via Homebrew
-- **Ubuntu**: Installs build-essential for compilation
-- **Windows**: Uses pre-built wheels when available
+### First-Time Setup (Interactive Wizard)
 
-### Caching
-- pip dependencies are cached to speed up builds
-- Cache keys include Python version and pyproject.toml hash
+1.  Select an AI model based on your needs and system capabilities
+2.  Connect to your databases (SQLite, PostgreSQL, MySQL)
+3.  Download your chosen model (handled automatically)
 
-### Error Handling
-- Security scans continue on error (won't fail the build)
-- Type checking continues on error (mypy can be strict)
-- Build artifacts are uploaded even if some steps fail
+### Start Querying
 
-### Cross-Platform Testing
-All workflows test across:
-- **Operating Systems**: Ubuntu, Windows, macOS
-- **Python Versions**: 3.9, 3.10, 3.11, 3.12
-- **Dependencies**: Both minimal and full installations
+```bash
+t2s query "Show me all customers who ordered in the last month"
+```
 
-## Troubleshooting
+## Usage Examples
 
-### Common Issues
+### Interactive Mode
 
-**1. Package Import Errors**
-- Ensure all dependencies are in `pyproject.toml`
-- Check that the package structure is correct
-- Verify `__init__.py` files are present
+```bash
+t2s
+```
 
-**2. PyPI Upload Failures**
-- Check API tokens are correct and not expired
-- Ensure version numbers are unique (PyPI doesn't allow overwrites)
-- Verify package name availability
+Launches an interactive experience with model management, database configuration, and query execution.
 
-**3. AI Model Dependencies**
-- sentencepiece build failures on macOS: Ensure Homebrew dependencies are installed
-- Large dependency download timeouts: Consider dependency caching strategies
+### Direct Query Mode
 
-**4. Test Failures**
-- Check Python version compatibility
-- Verify all test dependencies are installed
-- Review test output for specific error details
+```bash
+t2s query "Find top 5 products by revenue this year"
+```
 
-### Getting Help
+### Configuration Management
 
-If you encounter issues:
-1. Check the **Actions** tab for detailed error logs
-2. Review individual workflow step outputs
-3. Compare successful runs with failed ones
-4. Consider running workflows manually to test fixes
+```bash
+t2s config    # Full configuration menu
+t2s models    # Manage AI models
+t2s databases # Manage database connections
+```
 
-## Monitoring
+## Supported Databases
 
-Keep an eye on:
-- **Build times**: Should remain reasonable as dependencies grow
-- **Test coverage**: Ensure new features have appropriate tests
-- **Security alerts**: Address dependency vulnerabilities promptly
-- **PyPI statistics**: Monitor download counts and user feedback 
+  * SQLite - Perfect for local development and small projects
+  * PostgreSQL - Enterprise-grade relational database
+  * MySQL - Popular choice for web applications
+
+More database support on the way\!
+
+## Real-World Examples
+
+### Basic Queries
+
+**Input:** "Show me all active users"
+**Output:**
+
+```sql
+SELECT * FROM users WHERE status = 'active';
+```
+
+**Input:** "Count orders by month"
+**Output:**
+
+```sql
+SELECT DATE_FORMAT(created_at, '%Y-%m') as month, COUNT(*)
+FROM orders GROUP BY month ORDER BY month;
+```
+
+### Complex Queries
+
+**Input:** "Find customers who spent more than $1000 last quarter"
+**Output:**
+
+```sql
+SELECT c.name, c.email, SUM(o.total) as total_spent
+FROM customers c
+JOIN orders o ON c.id = o.customer_id
+WHERE o.created_at >= DATE_SUB(NOW(), INTERVAL 3 MONTH)
+GROUP BY c.id, c.name, c.email
+HAVING total_spent > 1000
+ORDER BY total_spent DESC;
+```
+
+## Who Is This For?
+
+T2S caters to a broad audience:
+
+  * **Database Administrators** - Swiftly explore and analyze database contents
+  * **Developers** - Prototype and query databases during development
+  * **Data Analysts** - Turn business questions into SQL without syntax struggles
+  * **Students & Researchers** - Learn SQL and experiment with AI models locally
+  * **Privacy-Conscious Users** - Handle sensitive data without external exposure
+
+## Development & Contributing
+
+Contributions are welcome\! This project reflects significant effort and meticulous care.
+
+### Setup Development Environment
+
+```bash
+git clone [https://github.com/lakshmanturlapati/t2s-cli.git](https://github.com/lakshmanturlapati/t2s-cli.git)
+cd t2s-cli
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -e ".[dev]"
+```
+
+### Run Tests
+
+```bash
+pytest
+```
+
+### Code Quality
+
+```bash
+black .
+flake8 .
+```
+
+## Roadmap
+
+  * Support for additional databases (Oracle, SQL Server)
+  * Natural language explanations for results
+  * Query history and favorites
+  * Custom model fine-tuning
+  * Integration with popular BI tools
+
+## License
+
+This project is licensed under the MIT License—see the `LICENSE` file for details.
+
+## Acknowledgments
+
+Developed with support and guidance from the University of Texas at Dallas.
+
+### Special Thanks:
+
+  * Professor Srikanth Kannan - For invaluable guidance and inspiration
+  * The open-source community for essential libraries
+  * HuggingFace for model infrastructure
+  * Contributors and users who help refine T2S
+
+## Author
+
+**Lakshman Turlapati**
+
+  * GitHub: [@lakshmanturlapati](https://www.google.com/search?q=https://github.com/lakshmanturlapati)
+  * Project Repository: [t2s-cli](https://www.google.com/search?q=https://github.com/lakshmanturlapati/t2s-cli)
+  * Portfolio: [https://www.audienclature.com](https://www.audienclature.com)
+  * LinkedIn: [https://www.linkedin.com/in/lakshman-turlapati-3091aa191/](https://www.linkedin.com/in/lakshman-turlapati-3091aa191/)
+
+"Bringing the power of AI to your database, locally and securely."
+
+This README will evolve with the project. Your feedback and contributions are always appreciated\!
+
