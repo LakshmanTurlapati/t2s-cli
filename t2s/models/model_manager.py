@@ -42,8 +42,8 @@ from transformers import (
     AutoTokenizer, 
     AutoModelForCausalLM, 
     AutoModelForSeq2SeqLM,
-    AutoProcessor,  # For multimodal models like SmolVLM and Gemma 3
-    AutoModelForVision2Seq,  # For vision-language models like SmolVLM
+    AutoProcessor,  # For multimodal models like Gemma 3
+    AutoModelForVision2Seq,  # For vision-language models
     Gemma3ForConditionalGeneration,  # For Gemma 3 multimodal models
     pipeline,
     BitsAndBytesConfig,
@@ -388,8 +388,8 @@ class ModelManager:
                 # Check if this is a legacy Gemma model (non-multimodal)
                 is_legacy_gemma = "gemma" in model_config.hf_model_id.lower() and not is_gemma3_multimodal
                 
-                # Check if this is a SmolVLM model that needs multimodal handling
-                is_smolvlm_model = "smolvlm" in model_config.hf_model_id.lower()
+                # Check if this is a SmolLM model (text-only, uses standard loading)
+                is_smollm_model = "smollm" in model_config.hf_model_id.lower()
                 
                 # Configure model loading based on device and model size
                 model_kwargs = self._get_model_loading_config(model_config)
@@ -650,52 +650,7 @@ class ModelManager:
                     
                     return True
                 
-                elif is_smolvlm_model:
-                    # Handle SmolVLM multimodal model - requires AutoProcessor and AutoModelForVision2Seq
-                    self.console.print(f"[blue]Downloading SmolVLM multimodal model using specialized components...[/blue]")
-                    
-                    task1 = progress.add_task(f"Downloading {model_config.name} processor...", total=100)
-                    
-                    # Download processor (replaces tokenizer for multimodal models)
-                    processor = AutoProcessor.from_pretrained(
-                        model_config.hf_model_id,
-                        cache_dir=str(model_path),
-                        local_files_only=False,
-                        trust_remote_code=False,
-                        resume_download=True
-                    )
-                    progress.update(task1, completed=100)
-                    
-                    # Download multimodal model
-                    task2 = progress.add_task(f"Downloading {model_config.name} model...", total=100)
-                    
-                    # Simulate download progress for UI
-                    for i in range(0, 101, 25):
-                        progress.update(task2, completed=i)
-                        await asyncio.sleep(0.2)
-                    
-                    model = AutoModelForVision2Seq.from_pretrained(
-                        model_config.hf_model_id,
-                        torch_dtype=model_kwargs.get("torch_dtype", torch.bfloat16),
-                        device_map=model_kwargs.get("device_map", "auto"),
-                        attn_implementation=model_kwargs.get("attn_implementation", "eager"),
-                        cache_dir=str(model_path),
-                        local_files_only=False,
-                        trust_remote_code=False,
-                        resume_download=True
-                    )
-                    
-                    progress.update(task2, completed=100)
-                    
-                    # Save locally
-                    processor.save_pretrained(str(model_path))
-                    model.save_pretrained(str(model_path))
-                    
-                    self.console.print(f"[green]✓ Successfully downloaded SmolVLM multimodal model[/green]")
-                    
-                    # Clean up to free memory
-                    del processor
-                    del model
+                # SmolLM uses standard text model downloading (handled in else block below)
                     
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
@@ -863,8 +818,8 @@ class ModelManager:
         # Check if this is a legacy Gemma model (non-multimodal)
         is_legacy_gemma = "gemma" in model_config.hf_model_id.lower() and not is_gemma3_multimodal
         
-        # Check if this is a SmolVLM model that needs multimodal handling
-        is_smolvlm_model = "smolvlm" in model_config.hf_model_id.lower()
+        # Check if this is a SmolLM model (text-only, uses standard loading)
+        is_smollm_model = "smollm" in model_config.hf_model_id.lower()
         
         # VM-specific optimizations
         if self.is_virtualized:
@@ -1020,8 +975,8 @@ class ModelManager:
                     # Check if this is a legacy Gemma model (non-multimodal)
                     is_legacy_gemma = "gemma" in model_config.hf_model_id.lower() and not is_gemma3_multimodal
                     
-                    # Check if this is a SmolVLM model that needs multimodal handling
-                    is_smolvlm_model = "smolvlm" in model_config.hf_model_id.lower()
+                    # Check if this is a SmolLM model (text-only, uses standard loading)
+                    is_smollm_model = "smollm" in model_config.hf_model_id.lower()
                     
                     if is_gemma3_multimodal:
                         # Use direct approach for Gemma 3 models with processor/tokenizer fallback
@@ -1166,33 +1121,7 @@ class ModelManager:
                                 # Fall back to manual loading for Gemma
                                 raise
                     
-                    elif is_smolvlm_model:
-                        # Use multimodal approach for SmolVLM models
-                        try:
-                            self.console.print(f"[blue]Loading {model_config.name} as multimodal model...[/blue]")
-                            
-                            # Load processor (replaces tokenizer for multimodal models)
-                            self.current_processor = AutoProcessor.from_pretrained(str(model_path))
-                            
-                            # Load multimodal model
-                            self.current_model = AutoModelForVision2Seq.from_pretrained(
-                                str(model_path),
-                                torch_dtype=model_kwargs.get("torch_dtype", torch.bfloat16),
-                                device_map=model_kwargs.get("device_map", "auto"),
-                                attn_implementation=model_kwargs.get("attn_implementation", "eager")
-                            )
-                            
-                            # For consistency with text models, create a text-only interface
-                            # Since SmolVLM can work with text-only inputs too
-                            self.current_tokenizer = None  # SmolVLM uses processor, not tokenizer
-                            self.current_pipeline = None   # SmolVLM doesn't use pipeline
-                            
-                            self.console.print(f"[green]✓ Successfully loaded {model_config.name} as multimodal model[/green]")
-                            self.console.print(f"[dim]Note: SmolVLM is a multimodal model optimized for image+text, but will work with text-only SQL generation[/dim]")
-                            
-                        except Exception as e:
-                            self.logger.error(f"Multimodal loading failed for SmolVLM: {e}")
-                            raise RuntimeError(f"Failed to load SmolVLM model: {e}")
+                    # SmolLM uses standard text model loading (handled in else block below)
                     
                     else:
                         # Use traditional approach for non-Gemma models
@@ -1459,9 +1388,7 @@ class ModelManager:
     async def generate_sql(self, system_prompt: str, user_prompt: str) -> str:
         """Generate SQL query using the loaded model."""
         
-        # Check if we have a SmolVLM model (uses processor instead of pipeline)
-        if self.current_processor and self.current_model and "smolvlm" in str(type(self.current_model)).lower():
-            return await self._generate_sql_smolvlm(system_prompt, user_prompt)
+        # SmolLM uses standard pipeline generation (handled below)
         
         # Check if we have a Gemma 3 multimodal model
         current_model_id = self.config.config.selected_model
@@ -1518,6 +1445,30 @@ class ModelManager:
                     "eos_token_id": self.current_tokenizer.eos_token_id,
                     "return_full_text": False
                 }
+            elif current_model_id and any(model_name in current_model_id.lower() for model_name in ["llama", "phi", "mistral", "qwen"]):
+                # Llama/Phi/Mistral/Qwen-specific parameters - more conservative for better accuracy
+                generation_params = {
+                    "max_new_tokens": 150,  # Conservative for focused SQL generation
+                    "do_sample": True,      # Enable sampling but controlled
+                    "temperature": 0.3,     # Lower temperature for more deterministic output
+                    "top_p": 0.8,          # More focused nucleus sampling
+                    "repetition_penalty": 1.2,  # Prevent repetitive output
+                    "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
+                    "eos_token_id": self.current_tokenizer.eos_token_id,
+                    "return_full_text": False
+                }
+            elif current_model_id and "smollm" in current_model_id.lower():
+                # SmolLM-specific parameters - needs very focused generation
+                generation_params = {
+                    "max_new_tokens": 100,  # Smaller for focused output
+                    "do_sample": False,     # Deterministic for better results
+                    "num_beams": 3,        # Beam search for better quality
+                    "temperature": None,    # Not used with do_sample=False
+                    "repetition_penalty": 1.1,
+                    "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
+                    "eos_token_id": self.current_tokenizer.eos_token_id,
+                    "return_full_text": False
+                }
             else:
                 # General model parameters - optimized for models like Gemma
                 generation_params = {
@@ -1565,7 +1516,6 @@ class ModelManager:
                                     pipeline_inputs = self._safe_to_device(pipeline_inputs, target_device)
                                 # else: leave tensors on CPU (default)
                                     
-                                self.console.print(f"[green]Pipeline input shapes: input_ids={pipeline_inputs['input_ids'].shape}, attention_mask={pipeline_inputs.get('attention_mask', 'None')}[/green]")
                             except Exception as device_error:
                                 self.console.print(f"[yellow]Device handling warning: {device_error}, using CPU[/yellow]")
                                 # Continue with CPU tensors
@@ -1586,7 +1536,6 @@ class ModelManager:
                                 if hasattr(self.current_pipeline.model, '_cache'):
                                     self.current_pipeline.model._cache = None
                                     
-                                self.console.print(f"[blue]Using model.generate with cleaned parameters and no cache[/blue]")
                                 
                                 generated_ids = self.current_pipeline.model.generate(
                                     **pipeline_inputs,
@@ -1607,7 +1556,6 @@ class ModelManager:
                                 response = [{"generated_text": generated_text}]
                         
                         except Exception as direct_error:
-                            self.console.print(f"[yellow]Direct model approach failed, trying pipeline: {direct_error}[/yellow]")
                             # Fallback to original pipeline approach
                             response = self.current_pipeline(
                                 full_prompt,
@@ -1697,61 +1645,6 @@ class ModelManager:
                 raise RuntimeError(error_msg)
             else:
                 raise RuntimeError(f"Error generating SQL: {e}")
-    
-    async def _generate_sql_smolvlm(self, system_prompt: str, user_prompt: str) -> str:
-        """Generate SQL using SmolVLM multimodal model with text-only input."""
-        try:
-            # Replace the user_question placeholder in the prompt
-            full_prompt = system_prompt.replace("{user_question}", user_prompt)
-            
-            # Create messages in chat format for SmolVLM
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": full_prompt}
-                    ]
-                }
-            ]
-            
-            # Apply chat template
-            prompt = self.current_processor.apply_chat_template(messages, add_generation_prompt=True)
-            
-            # Process text input (no image)
-            inputs = self.current_processor(text=prompt, images=None, return_tensors="pt")
-            inputs = {k: v.to(self.current_model.device) for k, v in inputs.items()}
-            
-            # Generate with appropriate parameters for SmolVLM
-            with torch.inference_mode():
-                generated_ids = self.current_model.generate(
-                    **inputs,
-                    max_new_tokens=200,
-                    temperature=0.7,
-                    top_p=0.9,
-                    do_sample=True,
-                    repetition_penalty=1.1
-                )
-            
-            # Decode the generated text
-            generated_texts = self.current_processor.batch_decode(
-                generated_ids,
-                skip_special_tokens=True,
-            )
-            
-            generated_text = generated_texts[0].strip()
-            
-            # Remove the original prompt from the generated text
-            if full_prompt in generated_text:
-                generated_text = generated_text.replace(full_prompt, "").strip()
-            
-            # Extract SQL from the response
-            sql_query = self._clean_generated_sql(generated_text)
-            
-            return sql_query
-            
-        except Exception as e:
-            self.logger.error(f"Error generating SQL with SmolVLM: {e}")
-            raise RuntimeError(f"Error generating SQL with SmolVLM: {e}")
     
     async def _generate_sql_gemma3_multimodal(self, system_prompt: str, user_prompt: str) -> str:
         """Generate SQL using Gemma 3 model with text-only input (supports both processor and tokenizer)."""

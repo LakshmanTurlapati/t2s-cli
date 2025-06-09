@@ -177,16 +177,6 @@ class SchemaAnalyzer:
                 "foreign_keys": table_info.get("foreign_keys", [])
             }
             
-            # Add sample data if it fits within token limit
-            sample_data = table_info.get("sample_data")
-            if sample_data:
-                sample_text = str(sample_data)
-                sample_tokens = len(sample_text) * token_per_char
-                
-                if current_tokens + sample_tokens < max_tokens * 0.3:  # Use 30% for sample data
-                    optimized_table["sample_data"] = sample_data
-                    current_tokens += sample_tokens
-            
             # Estimate tokens for this table
             table_text = f"Table: {table_name}\nColumns: {', '.join(optimized_table['columns'])}\n"
             table_tokens = len(table_text) * token_per_char

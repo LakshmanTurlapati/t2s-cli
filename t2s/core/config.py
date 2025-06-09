@@ -88,22 +88,22 @@ class Config:
             download_size_gb=6.0
         ),
         "llama-3-4b": SupportedModel(
-            name="Llama 3 (4B)",
-            hf_model_id="huggingface/CodeBERTa-small-v1",  # Code-focused model
+            name="Llama 3.2 (3B)",
+            hf_model_id="unsloth/Llama-3.2-3B-Instruct",  # Unsloth's optimized Llama 3.2 3B, no auth needed
             size=ModelSize.MEDIUM,
-            description="Balanced performance and accuracy",
-            parameters="4B",
-            recommended_ram_gb=10,
-            download_size_gb=4.5
+            description="Llama 3.2 3B Instruct model optimized for efficient inference",
+            parameters="3B",
+            recommended_ram_gb=8,
+            download_size_gb=6.5
         ),
-        "smolvlm-500m": SupportedModel(
-            name="SmolVLM (500M)",
-            hf_model_id="HuggingFaceTB/SmolVLM-500M-Instruct",  # Multimodal vision-language model
+        "smollm-1.7b": SupportedModel(
+            name="SmolLM (1.7B)",
+            hf_model_id="HuggingFaceTB/SmolLM2-1.7B-Instruct",  # Latest SmolLM2 instruction-tuned model
             size=ModelSize.SMALL,
-            description="Lightweight multimodal model - efficient for basic queries",
-            parameters="500M",
-            recommended_ram_gb=4,
-            download_size_gb=1.2
+            description="Lightweight text model - efficient for basic to intermediate queries",
+            parameters="1.7B",
+            recommended_ram_gb=6,
+            download_size_gb=3.2
         ),
         "defog-sqlcoder-7b": SupportedModel(
             name="Defog SQLCoder (7B)",

@@ -181,3 +181,6 @@ config.json
 # Final review gate script (exclude from version control)
 final_review_gate.py 
 windows_debug.md
+
+# Model Manager specific
+!model_manager.py

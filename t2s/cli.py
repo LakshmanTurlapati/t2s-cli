@@ -949,7 +949,7 @@ class T2SCLI:
         """Get a recommended model that doesn't require authentication."""
         # Prefer models that are typically open without gating
         free_model_preferences = [
-            "smolvlm-500m",  # Usually open
+            "smollm-1.7b",  # Usually open
             "defog-sqlcoder-7b",  # Often open for SQL tasks
         ]
         

@@ -233,8 +233,7 @@ class DatabaseManager:
                     "column_types": {},
                     "primary_keys": [],
                     "foreign_keys": [],
-                    "indexes": [],
-                    "sample_data": None
+                    "indexes": []
                 }
                 
                 # Get column information
@@ -253,7 +252,7 @@ class DatabaseManager:
                 fk_constraints = inspector.get_foreign_keys(table_name)
                 for fk in fk_constraints:
                     table_info["foreign_keys"].append({
-                        "columns": fk.get('constrained_columns', []),
+                        "constrained_columns": fk.get('constrained_columns', []),
                         "referred_table": fk.get('referred_table'),
                         "referred_columns": fk.get('referred_columns', [])
                     })
@@ -270,21 +269,6 @@ class DatabaseManager:
                         "columns": index.get('column_names', []),
                         "unique": index.get('unique', False)
                     })
-                
-                # Get sample data (first few rows)
-                try:
-                    with engine.connect() as conn:
-                        sample_query = f"SELECT * FROM {table_name} LIMIT 3"
-                        sample_result = conn.execute(text(sample_query))
-                        sample_rows = sample_result.fetchall()
-                        if sample_rows:
-                            # Convert to list of dictionaries
-                            columns = list(sample_result.keys())
-                            table_info["sample_data"] = [
-                                dict(zip(columns, row)) for row in sample_rows
-                            ]
-                except Exception:
-                    pass  # Skip if can't get sample data
                 
                 schema_info["tables"][table_name] = table_info
             

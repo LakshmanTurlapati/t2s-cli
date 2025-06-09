@@ -48,7 +48,7 @@ class T2SEngine:
         self.sql_validator = SQLValidator()
         
         # Setup logging
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(level=logging.DEBUG)
         self.logger = logging.getLogger(__name__)
     
     async def initialize(self) -> None:
@@ -203,17 +203,17 @@ class T2SEngine:
                 "foreign_keys": table_info.get("foreign_keys", [])
             }
             
-            # Add only first 2 rows of sample data to stay within token limits
-            sample_data = table_info.get("sample_data", [])
-            if sample_data:
-                optimized_table["sample_data"] = sample_data[:2]  # Only first 2 rows
-            
             optimized_schema["tables"][table_name] = optimized_table
         
         # Add key relationships
         optimized_schema["relationships"] = full_schema.get("relationships", [])[:5]  # Top 5 relationships
         
         self.logger.info(f"Sending optimized schema to model: {len(optimized_schema.get('tables', {}))} tables")
+        
+        # Debug logging to see exact schema being sent
+        self.logger.debug(f"Full optimized schema: {optimized_schema}")
+        for table_name, table_data in optimized_schema.get("tables", {}).items():
+            self.logger.debug(f"Table {table_name}: columns={table_data.get('columns', [])}, types={table_data.get('column_types', {})}")
         
         return optimized_schema
     
@@ -223,13 +223,14 @@ class T2SEngine:
         system_prompt = self._create_system_prompt(schema_info)
         user_prompt = natural_query
         
+        # Debug logging to see exact prompts being sent
+        self.logger.debug(f"System prompt being sent to model: {system_prompt[:500]}...")
+        self.logger.debug(f"User prompt: {user_prompt}")
+        
         try:
             # Generate using AI model - this is the ONLY attempt
             self.logger.info("Attempting AI model generation (NO FALLBACKS)")
             generated_text = await self.model_manager.generate_sql(system_prompt, user_prompt)
-            
-            # Log raw output for debugging (but don't show to user)
-            self.logger.debug(f"Raw generated text: {repr(generated_text)}")
             
             # Extract SQL query using basic regex - NO REPAIRS
             sql_query = self._extract_sql_query(generated_text)
@@ -256,24 +257,82 @@ class T2SEngine:
         # First, try to find SQL in code blocks
         code_block_match = re.search(r'```(?:sql)?\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
         if code_block_match:
-            return code_block_match.group(1).strip()
+            sql_content = code_block_match.group(1).strip()
+            # If there are multiple statements in code block, take only the first
+            statements = sql_content.split(';')
+            if statements and statements[0].strip():
+                return statements[0].strip() + ';'
         
-        # Look for SQL patterns
+        # Split text into lines and process line by line to find the first SQL statement
+        lines = text.split('\n')
+        sql_statement = ""
+        collecting_sql = False
+        
+        for line in lines:
+            line_stripped = line.strip()
+            
+            # Start collecting when we find a SQL keyword at the beginning of a line
+            if re.match(r'^(SELECT|INSERT|UPDATE|DELETE|CREATE|WITH)\s+', line_stripped, re.IGNORECASE):
+                if not collecting_sql:  # Only start if we're not already collecting
+                    collecting_sql = True
+                    sql_statement = line_stripped
+                    # If this line ends with semicolon, we're done
+                    if line_stripped.endswith(';'):
+                        break
+                else:
+                    # We hit another SQL statement while collecting, stop here
+                    break
+            elif collecting_sql:
+                # We're collecting a multi-line SQL statement
+                if line_stripped:
+                    # Skip lines that look like explanatory text or other queries
+                    if re.search(r'(what|list|show|find|get|query:|sql:|answer:|result:)', line_stripped, re.IGNORECASE):
+                        break  # Stop collecting if we hit explanatory text
+                    
+                    sql_statement += " " + line_stripped
+                    
+                    # If this line ends with semicolon, we're done
+                    if line_stripped.endswith(';'):
+                        break
+                else:
+                    # Empty line while collecting - might indicate end of statement
+                    if sql_statement and not sql_statement.endswith(';'):
+                        # Add semicolon if missing and stop
+                        sql_statement += ';'
+                    break
+        
+        # Clean up the extracted SQL
+        if sql_statement:
+            # Remove any trailing explanatory text
+            sql_statement = re.sub(r'\s+(what|list|show|find|get|query|sql|answer|result).*$', '', sql_statement, flags=re.IGNORECASE)
+            # Ensure it ends with semicolon
+            if not sql_statement.endswith(';'):
+                sql_statement += ';'
+            
+            # Validate it looks like SQL
+            if self._is_basic_sql_structure(sql_statement):
+                return sql_statement.strip()
+        
+        # Ultimate fallback: try regex but only take content before any explanatory keywords
         sql_patterns = [
-            r'(SELECT[^;]*;)',
-            r'(INSERT[^;]*;)', 
-            r'(UPDATE[^;]*;)',
-            r'(DELETE[^;]*;)',
-            r'(CREATE[^;]*;)',
+            r'(SELECT[^;]*?)(?:\s+(?:what|list|show|find|get|query|sql|answer|result)|;|$)',
+            r'(INSERT[^;]*?)(?:\s+(?:what|list|show|find|get|query|sql|answer|result)|;|$)',
+            r'(UPDATE[^;]*?)(?:\s+(?:what|list|show|find|get|query|sql|answer|result)|;|$)',
+            r'(DELETE[^;]*?)(?:\s+(?:what|list|show|find|get|query|sql|answer|result)|;|$)',
+            r'(CREATE[^;]*?)(?:\s+(?:what|list|show|find|get|query|sql|answer|result)|;|$)',
         ]
         
         for pattern in sql_patterns:
-            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                return match.group(1).strip()
+                sql = match.group(1).strip()
+                if self._is_basic_sql_structure(sql):
+                    if not sql.endswith(';'):
+                        sql += ';'
+                    return sql
         
-        # If no patterns match, return the text as-is (let validation catch issues)
-        return text.strip()
+        # If nothing worked, return empty string
+        return ""
     
     def _is_basic_sql_structure(self, sql: str) -> bool:
         """Basic SQL structure validation - minimal checks only."""
@@ -306,22 +365,20 @@ class T2SEngine:
     def _determine_model_intelligence(self, model_id: str, model_config) -> str:
         """Determine the intelligence level of a model based on its characteristics."""
         
-        # SQLCoder is specialized for SQL - treat as expert regardless of size
+        # SQLCoder is specialized for SQL - treat as expert
         if "sqlcoder" in model_id.lower():
             return "expert"
         
-        # Extract parameter count for intelligence classification
-        param_str = model_config.parameters.lower()
-        
-        if "500m" in param_str or "small" in param_str:
-            return "intermediate"  # Use intermediate prompt as requested (same as Gemma)
-        elif "4b" in param_str or "medium" in param_str:
-            return "intermediate" 
-        elif "7b" in param_str or "12b" in param_str or "large" in param_str:
+        # Llama/Mistral/Qwen models are generally quite capable - treat as advanced
+        if any(model_name in model_id.lower() for model_name in ["llama", "phi", "mistral", "qwen"]):
             return "advanced"
-        else:
-            # Default classification
-            return "intermediate"
+        
+        # SmolLM needs simpler prompts
+        if "smollm" in model_id.lower():
+            return "simple"
+            
+        # Everything else uses intermediate level  
+        return "intermediate"
     
     def _get_intelligence_based_prompt(self, intelligence_level: str, schema_info: Dict[str, Any], model_id: str) -> str:
         """Get system prompt based on model intelligence level."""
@@ -334,20 +391,17 @@ class T2SEngine:
         self.logger.info(f"🧠 Model '{model_id}' classified as '{intelligence_level}' intelligence level")
         
         if intelligence_level == "expert":
-            # Keep the current SQLCoder prompt for expert models
+            # SQLCoder prompt for expert models
             return self._get_sqlcoder_prompt(schema_info)
-            
         elif intelligence_level == "advanced":
-            # Detailed prompt for advanced models (7B+, 12B)
-            return self._get_advanced_prompt(db_type, table_metadata_string)
-            
-        elif intelligence_level == "intermediate":
-            # Simplified but comprehensive prompt for medium models (4B)
+            # Advanced prompt for capable models like Llama
+            return self._get_advanced_prompt(db_type, schema_info)
+        elif intelligence_level == "simple":
+            # Simple prompt for smaller models like SmolLM
+            return self._get_simple_prompt(db_type, schema_info)
+        else:
+            # Intermediate prompt for all other models
             return self._get_intermediate_prompt(db_type, schema_info)
-            
-        else:  # basic (unused now - SmolVLM 500M uses intermediate)
-            # Very simple prompt for small models (500M now uses intermediate)
-            return self._get_basic_prompt(db_type, table_metadata_string)
     
     def _build_table_metadata_string(self, schema_info: Dict[str, Any]) -> str:
         """Build table metadata string in a consistent format."""
@@ -440,33 +494,6 @@ class T2SEngine:
         table_metadata_string = self._build_table_metadata_string(schema_info)
         return self._get_database_specific_prompt(db_type, table_metadata_string)
     
-    def _get_advanced_prompt(self, db_type: str, table_metadata_string: str) -> str:
-        """Advanced prompt for high-parameter models (7B+, 12B) - comprehensive but structured."""
-        
-        db_specific_rules = self._get_db_specific_rules(db_type)
-        
-        return f"""You are an expert SQL developer. Convert the natural language question into a precise SQL query.
-
-CRITICAL REQUIREMENTS:
-1. Analyze the question carefully to understand what data is being requested
-2. Use the provided database schema to identify relevant tables and columns
-3. Write syntactically correct {db_type.upper()} SQL
-4. Use proper table aliases to avoid ambiguity
-5. Include appropriate JOINs when data spans multiple tables
-6. Apply filters (WHERE clauses) when the question implies conditions
-7. Use aggregate functions (COUNT, SUM, AVG, etc.) when the question asks for calculations
-8. Order results logically when appropriate
-
-{db_specific_rules}
-
-DATABASE SCHEMA:
-{table_metadata_string}
-
-TASK: Generate a SQL query for the question: {{user_question}}
-
-Respond with ONLY the SQL query, properly formatted:
-```sql"""
-
     def _get_intermediate_prompt(self, db_type: str, schema_info: Dict[str, Any]) -> str:
         """Intermediate prompt for medium models (4B) - detailed yet concise, guiding them through SQL generation steps."""
         
@@ -493,23 +520,64 @@ SELECT * FROM {first_table};
 
 Query: {{user_question}}
 SQL:"""
-
-    def _get_basic_prompt(self, db_type: str, table_metadata_string: str) -> str:
-        """Basic prompt for very small models - very simple and direct."""
+    
+    def _get_advanced_prompt(self, db_type: str, schema_info: Dict[str, Any]) -> str:
+        """Advanced prompt for capable models like Llama - more contextual and flexible."""
         
-        return f"""Write SQL for: {{user_question}}
+        # Use simplified schema but with more context
+        simplified_schema = self._build_simplified_schema_string(schema_info)
+        db_rules = self._get_db_specific_rules(db_type)
+        
+        # Get the first table for example
+        first_table = list(schema_info.get("tables", {}).keys())[0] if schema_info.get("tables") else "customers"
+        
+        return f"""You are an expert SQL developer. Your task is to convert natural language questions into accurate, efficient SQL queries.
 
-Tables:
-{table_metadata_string}
+{db_rules}
 
-Rules:
-- Use {db_type.upper()} syntax  
-- Join tables if needed
-- Add WHERE if filtering
-- Use aliases: FROM table t
+DATABASE SCHEMA:
+{simplified_schema}
 
-SQL:
-```sql"""
+INSTRUCTIONS:
+1. Analyze the user's question carefully to understand what data they want
+2. Use the provided schema to identify relevant tables and columns
+3. Write clean, efficient SQL that follows {db_type.upper()} syntax
+4. Use appropriate JOINs when data spans multiple tables
+5. Include proper WHERE clauses for filtering
+6. Use ORDER BY and LIMIT when appropriate for the question
+7. Return ONLY the SQL query, no explanations or additional text
+
+EXAMPLE:
+Question: "Show me all customers"
+SQL: SELECT * FROM {first_table};
+
+Now convert this question to SQL:
+{{user_question}}
+
+SQL:"""
+    
+    def _get_simple_prompt(self, db_type: str, schema_info: Dict[str, Any]) -> str:
+        """Simple prompt for smaller models like SmolLM - very direct and minimal."""
+        
+        # Get the first few tables only for simplicity
+        tables = list(schema_info.get("tables", {}).items())[:5]
+        
+        # Build a very simple schema string
+        schema_lines = []
+        for table_name, table_data in tables:
+            columns = table_data.get("columns", [])
+            schema_lines.append(f"Table {table_name}: {', '.join(columns[:10])}")  # Limit columns too
+        
+        simple_schema = "\n".join(schema_lines)
+        
+        return f"""Convert the question to a SQL query.
+
+Database tables:
+{simple_schema}
+
+Question: {{user_question}}
+
+SQL query:"""
 
     def _get_db_specific_rules(self, db_type: str) -> str:
         """Get database-specific rules for advanced prompts."""
