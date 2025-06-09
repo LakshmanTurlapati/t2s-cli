@@ -28,15 +28,15 @@ try:
         if pyproject_path.exists():
             with open(pyproject_path, "rb") as f:
                 pyproject_data = tomllib.load(f)
-            __version__ = pyproject_data.get("project", {}).get("version", "0.1.2")
+            __version__ = pyproject_data.get("project", {}).get("version", "0.2.0")
         else:
-            __version__ = "0.1.2"
+            __version__ = "0.2.0"
     else:
-        __version__ = "0.1.2"
+        __version__ = "0.2.0"
         
 except Exception:
     # Fallback if anything goes wrong
-    __version__ = "0.1.2"
+    __version__ = "0.2.0"
 
 __author__ = "Lakshman Turlapati"
 __email__ = "lakshmanturlapati@gmail.com"

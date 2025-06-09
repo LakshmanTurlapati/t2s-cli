@@ -9,7 +9,7 @@ def test_package_import():
     """Test that the main package can be imported."""
     import t2s
     assert hasattr(t2s, '__version__')
-    assert t2s.__version__ == "0.1.2"
+    assert t2s.__version__ == "0.2.0"
 
 def test_core_engine_import():
     """Test that the core engine can be imported."""
