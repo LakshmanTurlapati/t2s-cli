@@ -821,6 +821,9 @@ class ModelManager:
         # Check if this is a SmolLM model (text-only, uses standard loading)
         is_smollm_model = "smollm" in model_config.hf_model_id.lower()
         
+        # Check if this is SQLCoder model
+        is_sqlcoder = "sqlcoder" in model_config.hf_model_id.lower()
+        
         # VM-specific optimizations
         if self.is_virtualized:
             # Force more conservative settings for VMs
@@ -837,6 +840,32 @@ class ModelManager:
             torch.set_num_threads(2)  # Conservative threading in VMs
             
             return config
+        
+        # SQLCoder-specific optimizations for MPS (based on DBMS implementation)
+        if is_sqlcoder and self.device == "mps":
+            config["torch_dtype"] = torch.float16  # Use float16 for MPS as proven in DBMS
+            config["device_map"] = {"": self.device}  # Direct mapping to MPS
+            config["trust_remote_code"] = True
+            self.console.print(f"[green]Using optimized MPS settings for SQLCoder[/green]")
+            return config
+        
+        # Optimized settings for specific models on MPS
+        if self.device == "mps":
+            # Llama optimization for MPS
+            if "llama" in model_config.hf_model_id.lower():
+                config["torch_dtype"] = torch.float16  # float16 is faster than bfloat16 on MPS
+                config["device_map"] = {"": self.device}  # Direct mapping like SQLCoder
+                config["trust_remote_code"] = True
+                self.console.print(f"[green]Using optimized MPS settings for Llama[/green]")
+                return config
+            
+            # SmolLM optimization for MPS
+            elif is_smollm_model:
+                config["torch_dtype"] = torch.float16
+                config["device_map"] = {"": self.device}  # Direct mapping for faster inference
+                config["low_cpu_mem_usage"] = True
+                self.console.print(f"[green]Using optimized MPS settings for SmolLM[/green]")
+                return config
         
         # Windows-specific optimizations - AGGRESSIVE GPU USAGE
         if self._is_windows_system() and self.device == "cuda":
@@ -863,8 +892,8 @@ class ModelManager:
                 self.console.print(f"[yellow]⚠️  Windows + CPU: Using CPU-optimized settings[/yellow]")
                 return config
         
-        # Use quantization for large models or limited memory - but prefer GPU
-        if model_config.size.value == "large" and self.device == "cuda":
+        # Use quantization for large models or limited memory - but NOT for MPS or SQLCoder
+        if model_config.size.value == "large" and self.device == "cuda" and not is_sqlcoder:
             # Use 4-bit quantization for CUDA to fit large models
             config["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -876,16 +905,25 @@ class ModelManager:
         else:
             # Use appropriate precision for device
             if self.device == "mps":
-                # For Apple Silicon, use bfloat16 for Gemma models, float16 for others
-                config["torch_dtype"] = torch.bfloat16 if (is_legacy_gemma or is_gemma3_multimodal) else torch.float16
+                # For Apple Silicon - use bfloat16 for Gemma to prevent numerical instability
+                if is_legacy_gemma or is_gemma3_multimodal:
+                    config["torch_dtype"] = torch.bfloat16  # More stable for Gemma on MPS
+                    config["device_map"] = {"": self.device}  # Direct mapping for Gemma
+                    config["trust_remote_code"] = True
+                    self.console.print(f"[green]Using stable MPS settings for Gemma (bfloat16)[/green]")
+                    return config  # Return early to avoid device_map override
+                else:
+                    # For other models, use float16
+                    config["torch_dtype"] = torch.float16
+                    
             elif self.device == "cpu":
                 config["torch_dtype"] = torch.float32
             else:  # CUDA
                 # For CUDA, use float16 for better performance
                 config["torch_dtype"] = torch.float16
         
-        # Set device map for auto distribution - ALWAYS use for GPU
-        if self.device != "cpu":
+        # Set device map for auto distribution - ALWAYS use for GPU (except SQLCoder and Gemma on MPS)
+        if self.device != "cpu" and not (is_sqlcoder and self.device == "mps") and not ((is_legacy_gemma or is_gemma3_multimodal) and self.device == "mps"):
             # Use device_map for CUDA/MPS for better performance
             config["device_map"] = "auto"
             config["low_cpu_mem_usage"] = True  # Keep more on GPU
@@ -1422,7 +1460,7 @@ class ModelManager:
                 elif 'input_ids' in test_inputs and test_inputs['input_ids'].shape[-1] > 3000:
                     self.console.print(f"[yellow]Warning: Very long input detected ({test_inputs['input_ids'].shape[-1]} tokens), may cause issues[/yellow]")
                 
-                self.console.print(f"[blue]Input validation passed: {test_inputs['input_ids'].shape if 'input_ids' in test_inputs else 'No input_ids'}[/blue]")
+                # Input validation completed successfully
                 
             except Exception as tokenizer_error:
                 self.console.print(f"[red]Input validation failed: {tokenizer_error}[/red]")
@@ -1434,53 +1472,130 @@ class ModelManager:
         try:
             # Set generation parameters based on model type
             if current_model_id and "sqlcoder" in current_model_id.lower():
-                # SQLCoder-specific parameters (proven to work)
-                generation_params = {
-                    "max_new_tokens": 300,
-                    "do_sample": False,
-                    "num_beams": 5,
-                    "repetition_penalty": 1.1,
-                    "temperature": None,  # Not used with do_sample=False
-                    "pad_token_id": self.current_tokenizer.pad_token_id,
-                    "eos_token_id": self.current_tokenizer.eos_token_id,
-                    "return_full_text": False
-                }
+                # SQLCoder-specific parameters optimized for MPS (based on DBMS implementation)
+                using_mps = "mps" in str(self.current_model.device) if hasattr(self.current_model, 'device') else False
+                
+                if using_mps:
+                    # Simplified parameters for MPS to prevent errors
+                    generation_params = {
+                        "max_new_tokens": 150,
+                        "num_beams": 1,  # Simple beam search for MPS
+                        "do_sample": False,
+                        "early_stopping": False,  # Disable for MPS
+                        "pad_token_id": self.current_tokenizer.pad_token_id,
+                        "return_full_text": False
+                    }
+                else:
+                    # Full parameters for CUDA/CPU
+                    generation_params = {
+                        "max_new_tokens": 150,
+                        "do_sample": False,
+                        "num_beams": 2,
+                        "repetition_penalty": 1.1,
+                        "length_penalty": 1.0,
+                        "early_stopping": True,
+                        "pad_token_id": self.current_tokenizer.pad_token_id,
+                        "eos_token_id": self.current_tokenizer.eos_token_id,
+                        "return_full_text": False
+                    }
             elif current_model_id and any(model_name in current_model_id.lower() for model_name in ["llama", "phi", "mistral", "qwen"]):
-                # Llama/Phi/Mistral/Qwen-specific parameters - more conservative for better accuracy
-                generation_params = {
-                    "max_new_tokens": 150,  # Conservative for focused SQL generation
-                    "do_sample": True,      # Enable sampling but controlled
-                    "temperature": 0.3,     # Lower temperature for more deterministic output
-                    "top_p": 0.8,          # More focused nucleus sampling
-                    "repetition_penalty": 1.2,  # Prevent repetitive output
-                    "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
-                    "eos_token_id": self.current_tokenizer.eos_token_id,
-                    "return_full_text": False
-                }
+                # Llama/Phi/Mistral/Qwen-specific parameters - optimized for speed and accuracy
+                using_mps = "mps" in str(self.current_model.device) if hasattr(self.current_model, 'device') else False
+                
+                if using_mps:
+                    # Optimized for MPS - simpler parameters for faster inference
+                    generation_params = {
+                        "max_new_tokens": 100,  # Reduced for faster generation
+                        "do_sample": False,     # Deterministic for speed
+                        "num_beams": 1,        # No beam search for MPS
+                        "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
+                        "return_full_text": False,
+                        "use_cache": True      # Enable KV cache for speed
+                    }
+                else:
+                    # Full parameters for CUDA/CPU
+                    generation_params = {
+                        "max_new_tokens": 150,  # Conservative for focused SQL generation
+                        "do_sample": True,      # Enable sampling but controlled
+                        "temperature": 0.3,     # Lower temperature for more deterministic output
+                        "top_p": 0.8,          # More focused nucleus sampling
+                        "repetition_penalty": 1.2,  # Prevent repetitive output
+                        "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
+                        "eos_token_id": self.current_tokenizer.eos_token_id,
+                        "return_full_text": False,
+                        "use_cache": True      # Enable KV cache for speed
+                    }
             elif current_model_id and "smollm" in current_model_id.lower():
-                # SmolLM-specific parameters - needs very focused generation
-                generation_params = {
-                    "max_new_tokens": 100,  # Smaller for focused output
-                    "do_sample": False,     # Deterministic for better results
-                    "num_beams": 3,        # Beam search for better quality
-                    "temperature": None,    # Not used with do_sample=False
-                    "repetition_penalty": 1.1,
-                    "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
-                    "eos_token_id": self.current_tokenizer.eos_token_id,
-                    "return_full_text": False
-                }
+                # SmolLM-specific parameters - optimized for fast inference
+                using_mps = "mps" in str(self.current_model.device) if hasattr(self.current_model, 'device') else False
+                
+                if using_mps:
+                    # Ultra-fast settings for SmolLM on MPS
+                    generation_params = {
+                        "max_new_tokens": 80,   # Reduced for speed
+                        "do_sample": False,     # Deterministic
+                        "num_beams": 1,        # No beam search for speed
+                        "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
+                        "return_full_text": False,
+                        "use_cache": True      # Enable KV cache
+                    }
+                else:
+                    # Standard parameters for CPU/CUDA
+                    generation_params = {
+                        "max_new_tokens": 100,  # Smaller for focused output
+                        "do_sample": False,     # Deterministic for better results
+                        "num_beams": 2,        # Reduced beam search for speed
+                        "repetition_penalty": 1.1,
+                        "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
+                        "eos_token_id": self.current_tokenizer.eos_token_id,
+                        "return_full_text": False,
+                        "use_cache": True      # Enable KV cache
+                    }
             else:
                 # General model parameters - optimized for models like Gemma
-                generation_params = {
-                    "max_new_tokens": 200,  # Increased for better SQL generation
-                    "do_sample": True,      # Enable sampling for better diversity
-                    "temperature": 0.7,     # Higher temperature for better generation
-                    "top_p": 0.9,          # Nucleus sampling
-                    "repetition_penalty": 1.1,  # Lower repetition penalty
-                    "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
-                    "eos_token_id": self.current_tokenizer.eos_token_id,
-                    "return_full_text": False
-                }
+                using_mps = "mps" in str(self.current_model.device) if hasattr(self.current_model, 'device') else False
+                
+                if using_mps:
+                    # Optimized for MPS (Gemma and others) - use sampling to prevent numerical issues
+                    is_gemma = current_model_id and "gemma" in current_model_id.lower()
+                    
+                    if is_gemma:
+                        # Special parameters for Gemma on MPS to prevent inf/nan
+                        generation_params = {
+                            "max_new_tokens": 150,
+                            "do_sample": True,         # Use sampling for Gemma stability
+                            "temperature": 0.8,       # Moderate temperature for stability
+                            "top_p": 0.9,            # Nucleus sampling
+                            "top_k": 50,             # Top-k sampling for stability
+                            "repetition_penalty": 1.1,
+                            "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
+                            "eos_token_id": self.current_tokenizer.eos_token_id,
+                            "return_full_text": False,
+                            "use_cache": True
+                        }
+                    else:
+                        # For other models on MPS
+                        generation_params = {
+                            "max_new_tokens": 150,  # Reduced for faster inference
+                            "do_sample": False,     # Deterministic for speed on MPS
+                            "num_beams": 1,        # No beam search
+                            "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
+                            "return_full_text": False,
+                            "use_cache": True      # Enable KV cache
+                        }
+                else:
+                    # Standard parameters for CPU/CUDA
+                    generation_params = {
+                        "max_new_tokens": 200,  # Increased for better SQL generation
+                        "do_sample": True,      # Enable sampling for better diversity
+                        "temperature": 0.7,     # Higher temperature for better generation
+                        "top_p": 0.9,          # Nucleus sampling
+                        "repetition_penalty": 1.1,  # Lower repetition penalty
+                        "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
+                        "eos_token_id": self.current_tokenizer.eos_token_id,
+                        "return_full_text": False,
+                        "use_cache": True      # Enable KV cache
+                    }
             
             # Generate response with model-specific parameters
             with torch.inference_mode():
@@ -1530,7 +1645,9 @@ class ModelManager:
                                 # Ensure no past_key_values are passed (common cause of shape mismatch)
                                 generation_params_clean = generation_params.copy()
                                 generation_params_clean['past_key_values'] = None
-                                generation_params_clean['use_cache'] = False  # Disable caching to prevent shape issues
+                                # Keep use_cache from generation_params if specified, otherwise default to True for speed
+                                if 'use_cache' not in generation_params_clean:
+                                    generation_params_clean['use_cache'] = True
                                 
                                 # Clear any existing model cache
                                 if hasattr(self.current_pipeline.model, '_cache'):
@@ -1569,7 +1686,32 @@ class ModelManager:
                         )
                     
                 except RuntimeError as e:
-                    if "device-side assert" in str(e) or "CUDA error" in str(e) or "index out of bounds" in str(e):
+                    if "probability tensor contains either `inf`, `nan`" in str(e):
+                        # Handle Gemma numerical instability
+                        self.console.print(f"[yellow]Gemma numerical instability detected, trying fallback generation...[/yellow]")
+                        
+                        try:
+                            # Fallback with more conservative parameters
+                            fallback_params = {
+                                "max_new_tokens": 100,
+                                "do_sample": True,
+                                "temperature": 1.0,  # Higher temperature for stability
+                                "top_p": 0.95,
+                                "repetition_penalty": 1.05,  # Lower penalty
+                                "pad_token_id": self.current_tokenizer.pad_token_id or self.current_tokenizer.eos_token_id,
+                                "eos_token_id": self.current_tokenizer.eos_token_id,
+                                "use_cache": False,  # Disable cache for stability
+                                "return_full_text": False
+                            }
+                            
+                            response = self.current_pipeline(
+                                full_prompt,
+                                **fallback_params
+                            )
+                        except Exception as fallback_error:
+                            raise RuntimeError(f"Gemma generation failed even with fallback: {fallback_error}")
+                            
+                    elif "device-side assert" in str(e) or "CUDA error" in str(e) or "index out of bounds" in str(e):
                         # Comprehensive GPU fallback handling
                         self.console.print(f"[yellow]GPU generation failed with device-side assert, trying CPU fallback...[/yellow]")
                         
