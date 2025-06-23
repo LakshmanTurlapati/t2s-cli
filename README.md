@@ -3,9 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/t2s-cli.svg)](https://pypi.org/project/t2s-cli/)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
-<p align="center">
-  <img src="snippet.png" alt="T2S Screenshot" width="600"/>
-</p>
+![T2S Screenshot](./snippet.png)
 
 A powerful, privacy-first terminal-based Text-to-SQL converter that transforms natural language queries into SQL statements using state-of-the-art AI models—all running locally on your machine. Because your database deserves the best, and so does your privacy.
 
