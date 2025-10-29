@@ -154,27 +154,30 @@ class T2SCLI:
         while True:
             self.console.clear()
             self.console.print(Panel("T2S Configuration", style="bold bright_blue"))
-            
+
             choices = [
                 "Manage AI Models",
-                "Manage Databases", 
+                "Manage Databases",
+                "External API Keys",
                 "HuggingFace Authentication",
                 "General Settings",
                 "System Information",
                 "Back to Main Menu"
             ]
-            
+
             choice = simple_select("What would you like to configure?", choices)
-            
+
             if choice == choices[0]:  # Models
                 await self.model_management_menu()
             elif choice == choices[1]:  # Databases
                 await self.database_management_menu()
-            elif choice == choices[2]:  # HuggingFace
+            elif choice == choices[2]:  # External API Keys
+                await self.external_api_keys_menu()
+            elif choice == choices[3]:  # HuggingFace
                 await self.huggingface_auth_menu()
-            elif choice == choices[3]:  # Settings
+            elif choice == choices[4]:  # Settings
                 await self.general_settings_menu()
-            elif choice == choices[4]:  # System Info
+            elif choice == choices[5]:  # System Info
                 await self.show_system_info()
             else:  # Back
                 break
@@ -189,10 +192,19 @@ class T2SCLI:
             
             # Show current active model prominently
             current_model = self.config.config.selected_model
-            if current_model and current_model in self.config.SUPPORTED_MODELS:
-                model_name = self.config.SUPPORTED_MODELS[current_model].name
+            if current_model:
+                if current_model in self.config.SUPPORTED_MODELS:
+                    model_name = self.config.SUPPORTED_MODELS[current_model].name
+                    model_type = "Local"
+                elif current_model in self.config.EXTERNAL_API_MODELS:
+                    model_name = self.config.EXTERNAL_API_MODELS[current_model]["name"]
+                    model_type = "API"
+                else:
+                    model_name = current_model
+                    model_type = "Unknown"
+
                 self.console.print(Panel(
-                    f"🎯 Current Active Model: {model_name} ({current_model})",
+                    f"🎯 Current Active Model: {model_name} ({current_model}) [{model_type}]",
                     style="bold green",
                     title="Active Model"
                 ))
@@ -202,12 +214,13 @@ class T2SCLI:
                     style="bold yellow",
                     title="Active Model"
                 ))
-            
+
             self.console.print()
-            
-            # Show available models
+
+            # Show local models
+            self.console.print("[bold cyan]Local Models:[/bold cyan]")
             models_info = await self.engine.get_available_models() if self.engine else {}
-            
+
             if not models_info:
                 # Fallback: show from config
                 models_info = {}
@@ -244,13 +257,43 @@ class T2SCLI:
                 else:
                     card = self.art.get_model_card(info["name"], status, info)
                 self.console.print(card)
-            
+
+            # Show API models
             self.console.print()
-            
+            self.console.print("[bold magenta]External API Models:[/bold magenta]")
+            for model_id, model_info in self.config.EXTERNAL_API_MODELS.items():
+                # Check if API key is configured
+                provider = model_info["provider"]
+                has_api_key = bool(self.config.get_api_key(provider))
+
+                # Create simple display for API models
+                is_active = (model_id == current_model)
+                active_marker = " (ACTIVE)" if is_active else ""
+
+                # Add availability status
+                if has_api_key:
+                    availability = "[green]✓ Ready to use[/green]"
+                    panel_style = "magenta" if is_active else "dim"
+                else:
+                    availability = "[red]✗ API key not configured[/red]"
+                    panel_style = "dim red"
+
+                self.console.print(Panel(
+                    f"[bold]{model_info['name']}{active_marker}[/bold]\n"
+                    f"[dim]{model_info['description']}[/dim]\n"
+                    f"[yellow]Pricing: {model_info['pricing']}[/yellow]\n"
+                    f"[cyan]Provider: {model_info['provider']}[/cyan]\n"
+                    f"{availability}",
+                    title=f"API Model: {model_id}",
+                    style=panel_style
+                ))
+
+            self.console.print()
+
             choices = [
-                "Download Model",
-                "Select Active Model",
-                "Delete Model",
+                "Download Local Model",
+                "Select Active Model (Local or API)",
+                "Delete Local Model",
                 "Back"
             ]
             
@@ -523,23 +566,42 @@ class T2SCLI:
     
     async def select_model_wizard(self):
         """Guide user through model selection."""
+        # Get downloaded local models
         downloaded_models = [
-            (model_id, config.name)
+            (model_id, config.name, "local")
             for model_id, config in self.config.SUPPORTED_MODELS.items()
             if self.config.is_model_downloaded(model_id)
         ]
-        
-        if not downloaded_models:
-            self.console.print(self.art.get_status_indicator("warning", "No models downloaded yet. Please download a model first."))
+
+        # Add API models (only if API key is configured for the provider)
+        api_models = [
+            (model_id, model_info["name"], "api")
+            for model_id, model_info in self.config.EXTERNAL_API_MODELS.items()
+            if self.config.get_api_key(model_info["provider"])  # Only show if API key is set
+        ]
+
+        all_models = downloaded_models + api_models
+
+        if not all_models:
+            self.console.print(self.art.get_status_indicator("warning", "No models available. Please download a local model or configure API keys."))
             input("Press Enter to continue...")
             return
-        
+
         # Show current selection
         current_model = self.config.config.selected_model
-        if current_model and current_model in self.config.SUPPORTED_MODELS:
-            current_name = self.config.SUPPORTED_MODELS[current_model].name
+        if current_model:
+            if current_model in self.config.SUPPORTED_MODELS:
+                current_name = self.config.SUPPORTED_MODELS[current_model].name
+                model_type = "Local"
+            elif current_model in self.config.EXTERNAL_API_MODELS:
+                current_name = self.config.EXTERNAL_API_MODELS[current_model]["name"]
+                model_type = "API"
+            else:
+                current_name = current_model
+                model_type = "Unknown"
+
             self.console.print(Panel(
-                f"Currently Active: {current_name} ({current_model})",
+                f"Currently Active: {current_name} ({current_model}) [{model_type}]",
                 style="bold blue",
                 title="Current Selection"
             ))
@@ -549,51 +611,54 @@ class T2SCLI:
                 style="bold yellow",
                 title="Current Selection"
             ))
-        
+
         self.console.print()
-        
+
         # Format choices with more detail and active indicator
         model_choices = []
-        for model_id, name in downloaded_models:
-            model_config = self.config.SUPPORTED_MODELS[model_id]
+        for model_id, name, model_type in all_models:
             active_indicator = " (CURRENTLY ACTIVE)" if model_id == current_model else ""
-            choice_text = f"{name} ({model_id}) - {model_config.parameters}{active_indicator}"
-            model_choices.append(choice_text)
-        
-        model_choices.append("Cancel")
-        
-        model_choice = simple_select("Which model would you like to set as active?", model_choices)
-        
-        if model_choice == "Cancel":
-            return
-        
-        # Extract model ID from the choice
-        # Choice format: "Gemma 3 (4B) (gemma-3-4b) - 4B (CURRENTLY ACTIVE)"
-        # We need to get the text between the second set of parentheses
-        match = re.search(r'\([^)]+\)\s*\(([^)]+)\)', model_choice)
-        if match:
-            model_id = match.group(1)
-        else:
-            # Fallback: try to extract any model ID pattern
-            for supported_id in self.config.SUPPORTED_MODELS.keys():
-                if supported_id in model_choice:
-                    model_id = supported_id
-                    break
+            if model_type == "local":
+                model_config = self.config.SUPPORTED_MODELS[model_id]
+                choice_text = f"[Local] {name} ({model_id}) - {model_config.parameters}{active_indicator}"
             else:
-                self.console.print(self.art.get_status_indicator("error", "Could not extract model ID from selection"))
-                return
+                choice_text = f"[API] {name} ({model_id}){active_indicator}"
+            model_choices.append((choice_text, model_id))
+
+        # Create display choices
+        display_choices = [choice_text for choice_text, _ in model_choices]
+        display_choices.append("Cancel")
         
+        selected_choice = simple_select("Which model would you like to set as active?", display_choices)
+
+        if selected_choice == "Cancel":
+            return
+
+        # Find the corresponding model_id
+        choice_index = display_choices.index(selected_choice)
+        if choice_index < len(model_choices):
+            _, model_id = model_choices[choice_index]
+        else:
+            return
+
         # Don't change if it's already the active model
         if model_id == current_model:
-            self.console.print(self.art.get_status_indicator("info", f"Model {self.config.SUPPORTED_MODELS[model_id].name} is already active!"))
+            if model_id in self.config.SUPPORTED_MODELS:
+                model_name = self.config.SUPPORTED_MODELS[model_id].name
+            else:
+                model_name = self.config.EXTERNAL_API_MODELS[model_id]["name"]
+            self.console.print(self.art.get_status_indicator("info", f"Model {model_name} is already active!"))
             input("Press Enter to continue...")
             return
-        
+
         # Set as active model
         self.config.set_selected_model(model_id)
-        model_name = self.config.SUPPORTED_MODELS[model_id].name
+        if model_id in self.config.SUPPORTED_MODELS:
+            model_name = self.config.SUPPORTED_MODELS[model_id].name
+        else:
+            model_name = self.config.EXTERNAL_API_MODELS[model_id]["name"]
         self.console.print(self.art.get_status_indicator("success", f"Active model set to {model_name}"))
-        
+
         input("Press Enter to continue...")
     
     async def delete_model_wizard(self, model_manager: ModelManager):
@@ -816,7 +881,152 @@ class T2SCLI:
         
         if choice != choices[3]:  # Not back
             input("Press Enter to continue...")
-    
+
+    async def external_api_keys_menu(self):
+        """External API keys management menu."""
+        self.console.clear()
+        self.console.print(Panel("External API Keys Management", style="bold bright_magenta"))
+
+        # Show current API key status
+        providers = {
+            "anthropic": "Anthropic (Claude)",
+            "xai": "XAI (Grok)",
+            "google": "Google (Gemini)",
+            "openai": "OpenAI (GPT)"
+        }
+
+        self.console.print("[bold]Current API Key Status:[/bold]")
+        for provider, display_name in providers.items():
+            api_key = self.config.get_api_key(provider)
+            if api_key:
+                masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "***"
+                self.console.print(f"  ✓ {display_name}: {masked_key}")
+            else:
+                self.console.print(f"  ✗ {display_name}: [dim]Not configured[/dim]")
+
+        self.console.print()
+
+        choices = [
+            "Set Anthropic API Key (Claude)",
+            "Set XAI API Key (Grok)",
+            "Set Google API Key (Gemini)",
+            "Set OpenAI API Key (GPT)",
+            "Remove API Key",
+            "Test API Key",
+            "Back"
+        ]
+
+        choice = simple_select("What would you like to do?", choices)
+
+        if choice == choices[0]:  # Anthropic
+            await self._set_api_key_wizard("anthropic", "Anthropic", "https://console.anthropic.com/")
+        elif choice == choices[1]:  # XAI
+            await self._set_api_key_wizard("xai", "XAI", "https://x.ai/api")
+        elif choice == choices[2]:  # Google
+            await self._set_api_key_wizard("google", "Google AI Studio", "https://makersuite.google.com/app/apikey")
+        elif choice == choices[3]:  # OpenAI
+            await self._set_api_key_wizard("openai", "OpenAI", "https://platform.openai.com/api-keys")
+        elif choice == choices[4]:  # Remove
+            await self._remove_api_key_wizard()
+        elif choice == choices[5]:  # Test
+            await self._test_api_key_wizard()
+
+        if choice != choices[6]:  # Not back
+            input("Press Enter to continue...")
+
+    async def _set_api_key_wizard(self, provider: str, display_name: str, url: str):
+        """Wizard to set API key for a provider."""
+        self.console.print(f"\n[bold cyan]Set {display_name} API Key[/bold cyan]")
+        self.console.print(f"[dim]Get your API key at: {url}[/dim]\n")
+
+        api_key = input(f"Enter your {display_name} API key (or press Enter to cancel): ").strip()
+
+        if not api_key:
+            self.console.print(self.art.get_status_indicator("info", "Cancelled"))
+            return
+
+        # Save the API key
+        self.config.set_api_key(provider, api_key)
+        self.console.print(self.art.get_status_indicator("success", f"{display_name} API key saved!"))
+
+        # Optionally test the key
+        if Confirm.ask("Would you like to test this API key now?"):
+            from .models.external_api_manager import ExternalAPIManager
+            api_manager = ExternalAPIManager(self.config)
+            if api_manager.validate_api_key(provider, api_key):
+                self.console.print(self.art.get_status_indicator("success", "API key is valid!"))
+            else:
+                self.console.print(self.art.get_status_indicator("error", "API key validation failed. Please check your key."))
+
+    async def _remove_api_key_wizard(self):
+        """Wizard to remove API key."""
+        providers = {
+            "anthropic": "Anthropic (Claude)",
+            "xai": "XAI (Grok)",
+            "google": "Google (Gemini)",
+            "openai": "OpenAI (GPT)"
+        }
+
+        # Show only configured keys
+        configured = [(p, n) for p, n in providers.items() if self.config.get_api_key(p)]
+
+        if not configured:
+            self.console.print(self.art.get_status_indicator("info", "No API keys configured"))
+            return
+
+        choices = [name for _, name in configured]
+        choices.append("Cancel")
+
+        choice = simple_select("Which API key would you like to remove?", choices)
+
+        if choice == "Cancel":
+            return
+
+        # Find the provider
+        provider = next(p for p, n in configured if n == choice)
+
+        if Confirm.ask(f"Are you sure you want to remove the {choice} API key?"):
+            self.config.remove_api_key(provider)
+            self.console.print(self.art.get_status_indicator("success", f"{choice} API key removed"))
+
+    async def _test_api_key_wizard(self):
+        """Wizard to test API keys."""
+        providers = {
+            "anthropic": "Anthropic (Claude)",
+            "xai": "XAI (Grok)",
+            "google": "Google (Gemini)",
+            "openai": "OpenAI (GPT)"
+        }
+
+        # Show only configured keys
+        configured = [(p, n) for p, n in providers.items() if self.config.get_api_key(p)]
+
+        if not configured:
+            self.console.print(self.art.get_status_indicator("info", "No API keys configured"))
+            return
+
+        choices = [name for _, name in configured]
+        choices.append("Cancel")
+
+        choice = simple_select("Which API key would you like to test?", choices)
+
+        if choice == "Cancel":
+            return
+
+        # Find the provider
+        provider = next(p for p, n in configured if n == choice)
+        api_key = self.config.get_api_key(provider)
+
+        self.console.print(f"[blue]Testing {choice} API key...[/blue]")
+
+        from .models.external_api_manager import ExternalAPIManager
+        api_manager = ExternalAPIManager(self.config)
+
+        if api_manager.validate_api_key(provider, api_key):
+            self.console.print(self.art.get_status_indicator("success", "API key is valid!"))
+        else:
+            self.console.print(self.art.get_status_indicator("error", "API key validation failed. Please check your key."))
+
     async def general_settings_menu(self):
         """General settings menu."""
         self.console.clear()

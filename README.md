@@ -1,9 +1,9 @@
-
 # T2S - Text to SQL CLI
 
-![PyPI version](https://badge.fury.io/py/t2s-cli.svg)
+[![PyPI version](https://img.shields.io/pypi/v/t2s-cli.svg)](https://pypi.org/project/t2s-cli/)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
+![T2S Screenshot](./snippet.png)
 
 A powerful, privacy-first terminal-based Text-to-SQL converter that transforms natural language queries into SQL statements using state-of-the-art AI models—all running locally on your machine. Because your database deserves the best, and so does your privacy.
 
@@ -43,7 +43,7 @@ T2S is packed with capabilities to streamline your database querying experience:
 
 ## AI Model Recommendations
 
-Choosing the right AI model is key to unlocking T2S’s full potential. Here’s how to pick one that fits your needs:
+Choosing the right AI model is key to unlocking T2S's full potential. Here's how to pick one that fits your needs:
 
 ### For Best Results (95%+ Accuracy)
 * **Gemma 3 (12B)** - Ideal for production environments and complex queries
@@ -64,7 +64,7 @@ T2S includes memory compatibility warnings to guide you toward the best model fo
 ### Quick Start
 ```bash
 pip install t2s-cli
-````
+```
 
 ### For Gemma Model Support
 

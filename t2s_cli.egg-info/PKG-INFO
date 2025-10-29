@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: t2s-cli
-Version: 0.1.2
+Version: 0.2.1
 Summary: Terminal-based Text-to-SQL converter with AI model integration
 Author: Lakshman Turlapati
 Author-email: lakshmanturlapati@gmail.com
@@ -30,6 +30,8 @@ Requires-Dist: accelerate>=0.25.0
 Requires-Dist: huggingface-hub>=0.20.0
 Requires-Dist: datasets>=2.16.0
 Requires-Dist: tokenizers>=0.15.0
+Requires-Dist: sentencepiece>=0.1.99
+Requires-Dist: protobuf>=3.20.0
 Requires-Dist: rich>=13.0.0
 Requires-Dist: click>=8.1.0
 Requires-Dist: questionary>=2.0.0
@@ -73,7 +75,7 @@ Dynamic: license-file
 
 # T2S - Text to SQL CLI
 
-![PyPI version](https://badge.fury.io/py/t2s-cli.svg)
+[![PyPI version](https://img.shields.io/pypi/v/t2s-cli.svg)](https://pypi.org/project/t2s-cli/)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
 
