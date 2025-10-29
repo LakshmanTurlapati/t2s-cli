@@ -329,15 +329,26 @@ class ExternalAPIManager:
 
         model_config = self.config.EXTERNAL_API_MODELS[model_id]
         provider = model_config.get("provider")
+        model_name = model_config.get("name", model_id)
 
         # Get API key from config
         api_keys = self.config.config.api_keys
         api_key = api_keys.get(provider)
 
         if not api_key:
+            provider_names = {
+                "anthropic": "Anthropic",
+                "xai": "XAI",
+                "google": "Google",
+                "openai": "OpenAI"
+            }
+            provider_display = provider_names.get(provider, provider)
             raise ValueError(
-                f"No API key configured for {provider}. "
-                f"Please set it in configuration."
+                f"API key not configured for {model_name}.\n"
+                f"Please configure your {provider_display} API key:\n"
+                f"  1. Run 't2s config'\n"
+                f"  2. Select 'External API Keys'\n"
+                f"  3. Set {provider_display} API Key"
             )
 
         # Create or reuse client

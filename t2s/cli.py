@@ -262,16 +262,30 @@ class T2SCLI:
             self.console.print()
             self.console.print("[bold magenta]External API Models:[/bold magenta]")
             for model_id, model_info in self.config.EXTERNAL_API_MODELS.items():
+                # Check if API key is configured
+                provider = model_info["provider"]
+                has_api_key = bool(self.config.get_api_key(provider))
+
                 # Create simple display for API models
                 is_active = (model_id == current_model)
                 active_marker = " (ACTIVE)" if is_active else ""
+
+                # Add availability status
+                if has_api_key:
+                    availability = "[green]✓ Ready to use[/green]"
+                    panel_style = "magenta" if is_active else "dim"
+                else:
+                    availability = "[red]✗ API key not configured[/red]"
+                    panel_style = "dim red"
+
                 self.console.print(Panel(
                     f"[bold]{model_info['name']}{active_marker}[/bold]\n"
                     f"[dim]{model_info['description']}[/dim]\n"
                     f"[yellow]Pricing: {model_info['pricing']}[/yellow]\n"
-                    f"[cyan]Provider: {model_info['provider']}[/cyan]",
+                    f"[cyan]Provider: {model_info['provider']}[/cyan]\n"
+                    f"{availability}",
                     title=f"API Model: {model_id}",
-                    style="magenta" if is_active else "dim"
+                    style=panel_style
                 ))
 
             self.console.print()
@@ -559,10 +573,11 @@ class T2SCLI:
             if self.config.is_model_downloaded(model_id)
         ]
 
-        # Add API models (always available if API key is set)
+        # Add API models (only if API key is configured for the provider)
         api_models = [
             (model_id, model_info["name"], "api")
             for model_id, model_info in self.config.EXTERNAL_API_MODELS.items()
+            if self.config.get_api_key(model_info["provider"])  # Only show if API key is set
         ]
 
         all_models = downloaded_models + api_models
