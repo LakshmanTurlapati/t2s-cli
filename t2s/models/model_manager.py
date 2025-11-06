@@ -67,6 +67,7 @@ from rich.panel import Panel
 import requests
 
 from ..core.config import Config
+from .external_api_manager import ExternalAPIManager
 
 
 class ModelManager:
@@ -82,6 +83,8 @@ class ModelManager:
         self.current_pipeline = None
         self.current_processor = None
         self.hf_api = HfApi()
+        # Initialize external API manager
+        self.external_api_manager = ExternalAPIManager(config)
         
         # Detect virtualized environment early
         self.is_virtualized = self._is_virtualized_environment()
@@ -318,11 +321,18 @@ class ModelManager:
         if not selected_model:
             self.console.print("[yellow]No model selected. Use configuration to select a model.[/yellow]")
             return
-        
+
+        # Check if it's an API model
+        if self.config.is_api_model(selected_model):
+            # API models don't need to be downloaded
+            model_name = self.config.EXTERNAL_API_MODELS[selected_model]["name"]
+            self.console.print(f"[green]Using external API model: {model_name}[/green]")
+            return
+
         if not self.config.is_model_downloaded(selected_model):
             self.console.print(f"[yellow]Model {selected_model} not downloaded. Use configuration to download it.[/yellow]")
             return
-        
+
         await self.load_model(selected_model)
     
     async def download_model(self, model_id: str, progress_callback: Optional[callable] = None) -> bool:
@@ -1425,14 +1435,22 @@ class ModelManager:
 
     async def generate_sql(self, system_prompt: str, user_prompt: str) -> str:
         """Generate SQL query using the loaded model."""
-        
-        # SmolLM uses standard pipeline generation (handled below)
-        
-        # Check if we have a Gemma 3 multimodal model
+
+        # Check if current model is an external API model
         current_model_id = self.config.config.selected_model
+        if current_model_id and self.config.is_api_model(current_model_id):
+            return await self.external_api_manager.generate_sql(
+                current_model_id,
+                system_prompt,
+                user_prompt
+            )
+
+        # SmolLM uses standard pipeline generation (handled below)
+
+        # Check if we have a Gemma 3 multimodal model
         if current_model_id and self._is_gemma3_multimodal(self.config.SUPPORTED_MODELS.get(current_model_id)):
             return await self._generate_sql_gemma3_multimodal(system_prompt, user_prompt)
-        
+
         if not self.current_pipeline:
             raise RuntimeError("No model loaded. Please load a model first.")
         

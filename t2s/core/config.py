@@ -62,12 +62,58 @@ class T2SConfig(BaseModel):
     enable_auto_correction: bool = True
     show_analysis: bool = True
     theme: str = "dark"
+    # External API keys
+    api_keys: Dict[str, str] = Field(default_factory=dict)
 
 
 class Config:
     """Configuration manager for T2S."""
-    
-    # Hardcoded supported models as requested
+
+    # External API-based models
+    EXTERNAL_API_MODELS = {
+        "claude-haiku-4-5": {
+            "name": "Claude Haiku 4.5",
+            "provider": "anthropic",
+            "api_model_id": "claude-haiku-4-5",
+            "description": "Fast and cost-efficient model from Anthropic",
+            "pricing": "$1/M input, $5/M output tokens",
+            "type": "api"
+        },
+        "grok-code-fast-1": {
+            "name": "Grok Code Fast 1",
+            "provider": "xai",
+            "api_model_id": "grok-code-fast-1",
+            "description": "Speedy coding model from XAI with 256K context",
+            "pricing": "$0.20/M input, $1.50/M output tokens",
+            "type": "api"
+        },
+        "gemini-2.5-flash": {
+            "name": "Gemini 2.5 Flash",
+            "provider": "google",
+            "api_model_id": "gemini-2.5-flash",
+            "description": "Fast, efficient model from Google for large scale processing",
+            "pricing": "Competitive pricing",
+            "type": "api"
+        },
+        "gpt-4o-mini": {
+            "name": "GPT-4o Mini",
+            "provider": "openai",
+            "api_model_id": "gpt-4o-mini",
+            "description": "Cost-efficient OpenAI model, 60% cheaper than GPT-3.5",
+            "pricing": "$0.15/M input, $0.60/M output tokens",
+            "type": "api"
+        },
+        "gpt-4-turbo": {
+            "name": "GPT-4 Turbo",
+            "provider": "openai",
+            "api_model_id": "gpt-4-turbo",
+            "description": "Advanced OpenAI model with improved performance",
+            "pricing": "Premium pricing",
+            "type": "api"
+        }
+    }
+
+    # Hardcoded supported local models
     SUPPORTED_MODELS = {
         "gemma-3-4b": SupportedModel(
             name="Gemma 3 (4B)",
@@ -165,7 +211,7 @@ class Config:
     
     def set_selected_model(self, model_id: str) -> None:
         """Set the selected model."""
-        if model_id in self.SUPPORTED_MODELS:
+        if model_id in self.SUPPORTED_MODELS or model_id in self.EXTERNAL_API_MODELS:
             self._config.selected_model = model_id
             self.save_config()
         else:
@@ -196,7 +242,26 @@ class Config:
         """Set HuggingFace token."""
         self._config.huggingface_token = token
         self.save_config()
-    
+
+    def set_api_key(self, provider: str, api_key: str) -> None:
+        """Set API key for external provider."""
+        self._config.api_keys[provider] = api_key
+        self.save_config()
+
+    def get_api_key(self, provider: str) -> Optional[str]:
+        """Get API key for external provider."""
+        return self._config.api_keys.get(provider)
+
+    def remove_api_key(self, provider: str) -> None:
+        """Remove API key for external provider."""
+        if provider in self._config.api_keys:
+            del self._config.api_keys[provider]
+            self.save_config()
+
+    def is_api_model(self, model_id: str) -> bool:
+        """Check if model is an external API model."""
+        return model_id in self.EXTERNAL_API_MODELS
+
     def get_model_path(self, model_id: str) -> Path:
         """Get the local path for a model."""
         download_dir = Path(self._config.download_directory)
