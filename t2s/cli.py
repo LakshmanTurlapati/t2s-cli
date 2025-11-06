@@ -693,7 +693,7 @@ class T2SCLI:
     
     async def add_database_wizard(self, db_manager: DatabaseManager):
         """Guide user through adding a database."""
-        db_choices = ["SQLite", "PostgreSQL", "MySQL", "Cancel"]
+        db_choices = ["SQLite", "PostgreSQL", "MySQL", "MongoDB", "Cancel"]
         db_type = simple_select("What type of database?", db_choices)
         
         if db_type == "Cancel":
@@ -711,6 +711,22 @@ class T2SCLI:
             success = await db_manager.add_database(
                 db_name, "sqlite", path=db_path
             )
+        elif db_type == "MongoDB":
+            host = input("Host (default: localhost): ").strip() or "localhost"
+            port = input("Port (default: 27017): ").strip() or "27017"
+            database = input("Database name: ").strip()
+            username = input("Username (optional): ").strip() or None
+            password = input("Password (optional): ").strip() or None
+
+            success = await db_manager.add_database(
+                db_name,
+                "mongodb",
+                host=host,
+                port=int(port),
+                database=database,
+                username=username,
+                password=password
+            )
         else:
             host = input("Host (default: localhost): ").strip() or "localhost"
             port_default = "5432" if db_type == "PostgreSQL" else "3306"
@@ -718,7 +734,7 @@ class T2SCLI:
             database = input("Database name: ").strip()
             username = input("Username: ").strip()
             password = input("Password (optional): ").strip()
-            
+
             success = await db_manager.add_database(
                 db_name,
                 db_type.lower(),

@@ -1,11 +1,11 @@
-# T2S - Text to SQL CLI
+# T2S - Text to SQL & MQL CLI
 
 [![PyPI version](https://img.shields.io/pypi/v/t2s-cli.svg)](https://pypi.org/project/t2s-cli/)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![T2S Screenshot](./snippet.png)
 
-A powerful, privacy-first terminal-based Text-to-SQL converter that transforms natural language queries into SQL statements using state-of-the-art AI models—all running locally on your machine. Because your database deserves the best, and so does your privacy.
+A powerful, privacy-first terminal-based Text-to-SQL and Text-to-MQL converter that transforms natural language queries into SQL and MongoDB queries using state-of-the-art AI models—all running locally on your machine. Because your database deserves the best, and so does your privacy.
 
 Created by Lakshman Turlapati
 
@@ -24,9 +24,10 @@ T2S is packed with capabilities to streamline your database querying experience:
 * Support for complex multi-table joins and aggregations
 
 ### Smart Database Integration
-* Auto-detection of local databases (SQLite, PostgreSQL, MySQL)
-* Real-time schema analysis and intelligent table selection
-* Query validation and automatic error correction
+* Auto-detection of local databases (SQLite, PostgreSQL, MySQL, MongoDB)
+* Real-time schema analysis for both relational and document databases
+* Intelligent collection/table selection based on your query
+* Query validation for both SQL and MQL
 * Elegant result visualization in the terminal
 
 ### Beautiful Terminal Experience
@@ -132,15 +133,19 @@ t2s databases # Manage database connections
 
 ## Supported Databases
 
+### SQL Databases
   * SQLite - Perfect for local development and small projects
   * PostgreSQL - Enterprise-grade relational database
   * MySQL - Popular choice for web applications
 
-More database support on the way\!
+### NoSQL Databases
+  * **MongoDB** - Flexible document database with natural language to MQL conversion
+
+T2S seamlessly handles both SQL and MongoDB databases, automatically detecting the database type and generating the appropriate query language!
 
 ## Real-World Examples
 
-### Basic Queries
+### Basic SQL Queries
 
 **Input:** "Show me all active users"
 **Output:**
@@ -155,6 +160,25 @@ SELECT * FROM users WHERE status = 'active';
 ```sql
 SELECT DATE_FORMAT(created_at, '%Y-%m') as month, COUNT(*)
 FROM orders GROUP BY month ORDER BY month;
+```
+
+### MongoDB Queries
+
+**Input:** "Find all users over age 25"
+**Output:**
+
+```javascript
+db.users.find({age: {$gt: 25}})
+```
+
+**Input:** "Get average rating by product category"
+**Output:**
+
+```javascript
+db.products.aggregate([
+  {$group: {_id: "$category", avgRating: {$avg: "$rating"}}},
+  {$sort: {avgRating: -1}}
+])
 ```
 
 ### Complex Queries
@@ -211,11 +235,13 @@ flake8 .
 
 ## Roadmap
 
-  * Support for additional databases (Oracle, SQL Server)
+  * ✅ MongoDB support with natural language to MQL conversion (v0.2.1+)
+  * Support for additional databases (Oracle, SQL Server, Cassandra)
   * Natural language explanations for results
   * Query history and favorites
   * Custom model fine-tuning
   * Integration with popular BI tools
+  * Advanced MongoDB features (indexes, sharding suggestions)
 
 ## License
 
