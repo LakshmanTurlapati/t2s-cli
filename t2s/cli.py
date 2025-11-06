@@ -6,6 +6,9 @@ from typing import Optional
 import logging
 import re
 import platform
+import os
+import termios
+import tty
 
 import click
 from rich.console import Console
@@ -22,29 +25,144 @@ from .ui.ascii_art import T2SArt
 from . import __version__  # Import version from package
 
 
+def _getch():
+    """Get a single character from stdin without echo (Unix/Mac only)."""
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        # Handle arrow keys and other escape sequences
+        if ch == '\x1b':  # ESC
+            ch2 = sys.stdin.read(1)
+            if ch2 == '[':
+                ch3 = sys.stdin.read(1)
+                return '\x1b[' + ch3
+            return ch + ch2
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
 def simple_select(title: str, choices: list, default_index: int = 0) -> str:
-    """Simple selection menu without questionary."""
+    """Interactive selection menu with arrow key navigation and number input.
+
+    Navigation:
+    - Up/Down arrows: Move selection
+    - Type number: Direct selection (press Enter to confirm)
+    - Enter: Confirm selection (uses typed number if available, otherwise highlighted item)
+    - Ctrl+C/Escape: Use default selection
+    """
     console = Console()
-    console.print(f"\n[bold cyan]{title}[/bold cyan]")
-    
-    for i, choice in enumerate(choices):
-        marker = ">" if i == default_index else " "
-        console.print(f" {marker} {i+1}. {choice}")
-    
-    while True:
-        try:
-            selection = input(f"\nSelect option (1-{len(choices)}): ").strip()
-            if not selection:
+    current_selection = default_index
+    number_buffer = ""
+
+    def display_menu():
+        """Display the menu with current selection highlighted."""
+        # Use ANSI codes for colors directly to avoid Rich's line handling
+        # Cyan color for title
+        output = f"\n\033[1;36m{title}\033[0m\n"
+
+        for i, choice in enumerate(choices):
+            marker = ">" if i == current_selection else " "
+            # Cyan color for numbers
+            output += f" {marker} \033[36m{i+1}.\033[0m {choice}\n"
+
+        # Add input prompt in dim gray
+        output += "\n"
+        if number_buffer:
+            output += f"\033[2mNumber input: {number_buffer}_\033[0m"
+        else:
+            output += f"\033[2mUse ↑↓ arrows to navigate, or type a number (1-{len(choices)})\033[0m"
+
+        # Print without newline at end
+        sys.stdout.write(output)
+        sys.stdout.flush()
+
+        # Return the number of lines printed for clearing
+        return output.count('\n') + 1  # +1 for the last line without \n
+
+    def clear_menu(num_lines):
+        """Clear the previously displayed menu."""
+        # First, clear the current line (where cursor is at end of prompt)
+        sys.stdout.write('\r')       # Move to start of current line
+        sys.stdout.write('\033[2K')  # Clear entire line
+
+        # Now move up and clear each previous line
+        for _ in range(num_lines - 1):
+            sys.stdout.write('\033[A')  # Move up one line
+            sys.stdout.write('\r')       # Move to start of line
+            sys.stdout.write('\033[2K')  # Clear entire line
+
+        sys.stdout.flush()
+
+    # Initial display
+    lines_displayed = display_menu()
+
+    try:
+        while True:
+            ch = _getch()
+
+            # Handle arrow keys
+            if ch == '\x1b[A':  # Up arrow
+                if not number_buffer:  # Only move if no number typed
+                    current_selection = (current_selection - 1) % len(choices)
+                    clear_menu(lines_displayed)
+                    lines_displayed = display_menu()
+
+            elif ch == '\x1b[B':  # Down arrow
+                if not number_buffer:  # Only move if no number typed
+                    current_selection = (current_selection + 1) % len(choices)
+                    clear_menu(lines_displayed)
+                    lines_displayed = display_menu()
+
+            # Handle number input
+            elif ch.isdigit():
+                number_buffer += ch
+                clear_menu(lines_displayed)
+                lines_displayed = display_menu()
+
+            # Handle backspace
+            elif ch in ('\x7f', '\x08'):  # Backspace or Delete
+                if number_buffer:
+                    number_buffer = number_buffer[:-1]
+                    clear_menu(lines_displayed)
+                    lines_displayed = display_menu()
+
+            # Handle Enter
+            elif ch in ('\r', '\n'):
+                clear_menu(lines_displayed)
+                sys.stdout.write('\n')
+                sys.stdout.flush()
+
+                if number_buffer:
+                    # Use typed number
+                    try:
+                        idx = int(number_buffer) - 1
+                        if 0 <= idx < len(choices):
+                            return choices[idx]
+                        else:
+                            console.print(f"[red]Invalid selection. Please enter 1-{len(choices)}[/red]")
+                            number_buffer = ""
+                            lines_displayed = display_menu()
+                    except ValueError:
+                        console.print(f"[red]Invalid input[/red]")
+                        number_buffer = ""
+                        lines_displayed = display_menu()
+                else:
+                    # Use arrow-selected item
+                    return choices[current_selection]
+
+            # Handle Escape
+            elif ch == '\x1b':
+                clear_menu(lines_displayed)
+                console.print(f"[yellow]Cancelled - using default: {choices[default_index]}[/yellow]")
                 return choices[default_index]
-            
-            idx = int(selection) - 1
-            if 0 <= idx < len(choices):
-                return choices[idx]
-            else:
-                console.print(f"[red]Please enter a number between 1 and {len(choices)}[/red]")
-        except (ValueError, KeyboardInterrupt):
-            console.print(f"[yellow]Using default: {choices[default_index]}[/yellow]")
-            return choices[default_index]
+
+    except KeyboardInterrupt:
+        clear_menu(lines_displayed)
+        console.print(f"[yellow]Interrupted - using default: {choices[default_index]}[/yellow]")
+        return choices[default_index]
 
 
 class T2SCLI:
