@@ -218,32 +218,40 @@ class T2SEngine:
         return optimized_schema
     
     async def _generate_sql(self, natural_query: str, schema_info: Dict[str, Any]) -> str:
-        """Generate SQL query using ONLY the AI model - no fallbacks, no repairs."""
+        """Generate SQL or MQL query using ONLY the AI model - no fallbacks, no repairs."""
+        # Detect database type
+        db_type = self._detect_database_type()
+
         # Create a structured prompt with full schema information
         system_prompt = self._create_system_prompt(schema_info)
         user_prompt = natural_query
-        
+
         # Debug logging to see exact prompts being sent
         self.logger.debug(f"System prompt being sent to model: {system_prompt[:500]}...")
         self.logger.debug(f"User prompt: {user_prompt}")
-        
+
         try:
             # Generate using AI model - this is the ONLY attempt
-            self.logger.info("Attempting AI model generation (NO FALLBACKS)")
+            self.logger.info(f"Attempting AI model generation for {db_type.upper()} (NO FALLBACKS)")
             generated_text = await self.model_manager.generate_sql(system_prompt, user_prompt)
-            
-            # Extract SQL query using basic regex - NO REPAIRS
-            sql_query = self._extract_sql_query(generated_text)
-            
-            if not sql_query or sql_query.strip() == "":
-                raise ValueError("No SQL query could be extracted from model output")
-            
-            self.logger.info(f"✅ AI model successfully generated valid SQL: {sql_query}")
-            return sql_query
-        
+
+            # Extract query based on database type
+            if db_type == "mongodb":
+                query = self._extract_mql_query(generated_text)
+                query_type = "MQL"
+            else:
+                query = self._extract_sql_query(generated_text)
+                query_type = "SQL"
+
+            if not query or query.strip() == "":
+                raise ValueError(f"No {query_type} query could be extracted from model output")
+
+            self.logger.info(f"✅ AI model successfully generated valid {query_type}: {query}")
+            return query
+
         except Exception as e:
             # NO FALLBACKS - throw the error
-            error_msg = f"AI model failed to generate valid SQL: {str(e)}"
+            error_msg = f"AI model failed to generate valid query: {str(e)}"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
     
@@ -338,29 +346,110 @@ class T2SEngine:
         """Basic SQL structure validation - minimal checks only."""
         if not sql:
             return False
-        
+
         sql_upper = sql.upper().strip()
-        
+
         # Must start with a valid SQL command
         valid_starts = ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "SHOW", "DESCRIBE"]
         return any(sql_upper.startswith(start) for start in valid_starts)
-    
+
+    def _extract_mql_query(self, generated_text: str) -> str:
+        """Extract MongoDB query from generated text."""
+        if not generated_text:
+            return ""
+
+        text = generated_text.strip()
+
+        # Try to find MQL in code blocks (javascript, json, or plain)
+        code_block_patterns = [
+            r'```(?:javascript|js|json|mql)?\s*(.*?)\s*```',
+            r'```\s*(db\..*?)\s*```'
+        ]
+
+        for pattern in code_block_patterns:
+            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            if match:
+                mql_content = match.group(1).strip()
+                # Clean up and validate
+                if self._is_valid_mql_structure(mql_content):
+                    return mql_content
+
+        # Try to find db.collection patterns
+        mql_patterns = [
+            r'(db\.\w+\.(?:find|aggregate|countDocuments|distinct|insertOne|updateOne|deleteOne|findOne)\s*\([^)]*\))',
+            r'(db\.\w+\.(?:find|aggregate|countDocuments|distinct)\s*\([\s\S]*?\)(?:\s*\.(?:sort|limit|skip)\s*\([^)]*\))*)',
+        ]
+
+        for pattern in mql_patterns:
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                mql = match.group(1).strip()
+                if self._is_valid_mql_structure(mql):
+                    return mql
+
+        # Last resort: look for any line starting with db.
+        lines = text.split('\n')
+        for line in lines:
+            line_stripped = line.strip()
+            if line_stripped.startswith('db.'):
+                if self._is_valid_mql_structure(line_stripped):
+                    return line_stripped
+
+        return ""
+
+    def _is_valid_mql_structure(self, mql: str) -> bool:
+        """Basic MQL structure validation."""
+        if not mql:
+            return False
+
+        mql = mql.strip()
+
+        # Must start with db.
+        if not mql.startswith('db.'):
+            return False
+
+        # Must contain a valid operation
+        valid_operations = [
+            'find', 'aggregate', 'countDocuments', 'distinct',
+            'insertOne', 'insertMany', 'updateOne', 'updateMany',
+            'deleteOne', 'deleteMany', 'findOne', 'replaceOne'
+        ]
+
+        return any(f'.{op}(' in mql for op in valid_operations)
+
+    def _detect_database_type(self) -> str:
+        """Detect the current database type from configuration."""
+        default_db = self.config.config.default_database
+        if default_db and default_db in self.config.config.databases:
+            db_config = self.config.config.databases[default_db]
+            return db_config.type.lower()
+        return "sqlite"  # Default fallback
+
     def _create_system_prompt(self, schema_info: Dict[str, Any]) -> str:
         """Create system prompt optimized for the current model's intelligence level."""
-        
+
+        # Detect database type
+        db_type = self._detect_database_type()
+
         # Get current model information
         current_model_id = self.config.config.selected_model
         if not current_model_id or current_model_id not in self.config.SUPPORTED_MODELS:
-            # Fallback to SQLCoder format for unknown models
-            return self._get_sqlcoder_prompt(schema_info)
-        
+            # Fallback based on database type
+            if db_type == "mongodb":
+                return self._get_mongodb_intermediate_prompt(schema_info)
+            else:
+                return self._get_sqlcoder_prompt(schema_info)
+
         model_config = self.config.SUPPORTED_MODELS[current_model_id]
-        
+
         # Determine model intelligence level based on parameters and specialization
         intelligence_level = self._determine_model_intelligence(current_model_id, model_config)
-        
-        # Create prompt based on intelligence level
-        return self._get_intelligence_based_prompt(intelligence_level, schema_info, current_model_id)
+
+        # Create prompt based on intelligence level and database type
+        if db_type == "mongodb":
+            return self._get_intelligence_based_mongodb_prompt(intelligence_level, schema_info)
+        else:
+            return self._get_intelligence_based_prompt(intelligence_level, schema_info, current_model_id)
     
     def _determine_model_intelligence(self, model_id: str, model_config) -> str:
         """Determine the intelligence level of a model based on its characteristics."""
@@ -622,7 +711,10 @@ SQL query:"""
     
     def _get_database_specific_prompt(self, db_type: str, table_metadata_string: str) -> str:
         """Get database-specific system prompt for SQLCoder."""
-        
+
+        if db_type == "mongodb":
+            return self._get_mongodb_expert_prompt(table_metadata_string)
+
         if db_type == "sqlite":
             return f"""### Instructions:
 Your task is to convert a question into a SQL query, given a SQLite database schema.
@@ -817,4 +909,122 @@ Based on your instructions, here is the SQL query I have generated to answer the
                 "downloaded": self.config.is_model_downloaded(model_id),
                 "compatibility": self.config.check_model_compatibility(model_id)
             }
-        return models_info 
+        return models_info
+
+    # MongoDB-specific methods
+
+    def _build_mongodb_schema_string(self, schema_info: Dict[str, Any]) -> str:
+        """Build MongoDB schema string from schema info."""
+        schema_parts = []
+
+        for collection_name, collection_data in schema_info.get("collections", {}).items():
+            fields = collection_data.get("fields", [])
+            field_types = collection_data.get("field_types", {})
+            doc_count = collection_data.get("document_count", 0)
+
+            # Build field list with types
+            field_list = []
+            for field in fields:
+                field_type = field_types.get(field, "unknown")
+                field_list.append(f"{field}: {field_type}")
+
+            collection_info = f"Collection: {collection_name}\n"
+            collection_info += f"  Documents: {doc_count}\n"
+            collection_info += f"  Fields: {', '.join(field_list)}"
+
+            schema_parts.append(collection_info)
+
+        return "\n\n".join(schema_parts)
+
+    def _get_mongodb_expert_prompt(self, schema_string: str) -> str:
+        """Get MongoDB expert prompt for specialized models."""
+        return f"""### Instructions:
+Your task is to convert a natural language question into a MongoDB query (MQL), given a MongoDB database schema.
+
+Adhere to these rules:
+- **Use MongoDB Query Language (MQL)** - use proper MongoDB syntax
+- **Return queries in this format**: db.collection.operation({{query}})
+- **Common operations**: find(), aggregate(), countDocuments(), distinct()
+- **Use proper operators**: $eq, $ne, $gt, $gte, $lt, $lte, $in, $nin, $and, $or, $not
+- **For aggregation**, use pipeline stages: $match, $group, $sort, $limit, $project, $lookup
+- **Field references in aggregation**: Use "$fieldName" syntax
+- **Always include the collection name** in your query
+
+### MongoDB Schema:
+{schema_string}
+
+### Examples:
+Question: "Find all users"
+MQL: db.users.find({{}})
+
+Question: "Count documents where age is greater than 25"
+MQL: db.users.countDocuments({{age: {{$gt: 25}}}})
+
+Question: "Get average salary by department"
+MQL: db.employees.aggregate([
+  {{$group: {{_id: "$department", avgSalary: {{$avg: "$salary"}}}}}},
+  {{$sort: {{avgSalary: -1}}}}
+])
+
+### Input:
+Generate a MongoDB query that answers the question `{{user_question}}`.
+
+### Response:
+Based on your instructions, here is the MongoDB query I have generated to answer the question `{{user_question}}`:
+```javascript"""
+
+    def _get_mongodb_intermediate_prompt(self, schema_info: Dict[str, Any]) -> str:
+        """Intermediate MongoDB prompt for medium-sized models."""
+        schema_string = self._build_mongodb_schema_string(schema_info)
+
+        # Get first collection for example
+        first_collection = list(schema_info.get("collections", {}).keys())[0] if schema_info.get("collections") else "users"
+
+        return f"""You are a specialized Text-to-MongoDB model. Your task is to convert natural language queries into MongoDB queries (MQL).
+
+Follow these steps:
+1. Understand what data the user is asking for
+2. Identify the relevant collection from the schema
+3. Choose the right MongoDB operation (find, aggregate, countDocuments, distinct)
+4. Construct the query using proper MQL syntax
+
+MongoDB Schema:
+{schema_string}
+
+MongoDB Query Format:
+- Simple queries: db.collection.find({{field: value}})
+- Aggregations: db.collection.aggregate([{{$match: {{}}}}, {{$group: {{}}}}])
+- Counts: db.collection.countDocuments({{field: value}})
+
+Example:
+db.{first_collection}.find({{}})
+
+Query: {{user_question}}
+MQL:"""
+
+    def _get_mongodb_simple_prompt(self, schema_info: Dict[str, Any]) -> str:
+        """Simple MongoDB prompt for smaller models."""
+        # Get collections list
+        collections = list(schema_info.get("collections", {}).keys())[:5]
+
+        collections_str = ", ".join(collections) if collections else "users, orders"
+
+        return f"""Convert the question to a MongoDB query.
+
+Collections: {collections_str}
+
+Question: {{user_question}}
+
+MongoDB query:"""
+
+    def _get_intelligence_based_mongodb_prompt(self, intelligence_level: str, schema_info: Dict[str, Any]) -> str:
+        """Get MongoDB prompt based on model intelligence level."""
+        if intelligence_level == "expert":
+            schema_string = self._build_mongodb_schema_string(schema_info)
+            return self._get_mongodb_expert_prompt(schema_string)
+        elif intelligence_level == "advanced":
+            return self._get_mongodb_intermediate_prompt(schema_info)
+        elif intelligence_level == "simple":
+            return self._get_mongodb_simple_prompt(schema_info)
+        else:
+            return self._get_mongodb_intermediate_prompt(schema_info)
