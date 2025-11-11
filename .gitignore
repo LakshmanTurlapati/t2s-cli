@@ -177,6 +177,8 @@ Thumbs.db
 tmp_dataset.json
 .t2s/
 config.json
+*.db
+chinook.db
 
 # Final review gate script (exclude from version control)
 final_review_gate.py 

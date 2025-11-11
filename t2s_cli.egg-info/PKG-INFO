@@ -1,7 +1,7 @@
 Metadata-Version: 2.4
 Name: t2s-cli
-Version: 0.2.1
-Summary: Terminal-based Text-to-SQL converter with AI model integration
+Version: 0.3.0
+Summary: Terminal-based Text-to-SQL and Text-to-MQL converter with local and cloud AI model integration
 Author: Lakshman Turlapati
 Author-email: lakshmanturlapati@gmail.com
 License: MIT
@@ -9,7 +9,7 @@ Project-URL: Homepage, https://github.com/lakshmanturlapati/t2s-cli
 Project-URL: Repository, https://github.com/lakshmanturlapati/t2s-cli
 Project-URL: Documentation, https://github.com/lakshmanturlapati/t2s-cli#readme
 Project-URL: Issues, https://github.com/lakshmanturlapati/t2s-cli/issues
-Keywords: sql,text-to-sql,ai,database,cli,terminal
+Keywords: sql,mongodb,text-to-sql,text-to-mql,ai,database,cli,terminal,nosql
 Classifier: Development Status :: 4 - Beta
 Classifier: Intended Audience :: Developers
 Classifier: License :: OSI Approved :: MIT License
@@ -42,9 +42,13 @@ Requires-Dist: sqlalchemy>=2.0.0
 Requires-Dist: sqlparse>=0.4.0
 Requires-Dist: psycopg2-binary>=2.9.0
 Requires-Dist: pymysql>=1.0.0
+Requires-Dist: pymongo>=4.6.0
 Requires-Dist: python-dotenv>=1.0.0
 Requires-Dist: pydantic>=2.0.0
 Requires-Dist: pillow>=9.0.0
+Requires-Dist: anthropic>=0.40.0
+Requires-Dist: openai>=1.0.0
+Requires-Dist: google-genai>=0.8.0
 Provides-Extra: gemma
 Requires-Dist: sentencepiece>=0.1.99; extra == "gemma"
 Provides-Extra: test
@@ -72,12 +76,12 @@ Requires-Dist: pytest-mock>=3.10.0; extra == "all"
 Requires-Dist: pytest-asyncio>=0.21.0; extra == "all"
 Dynamic: license-file
 
-
 # T2S - Text to SQL CLI
 
 [![PyPI version](https://img.shields.io/pypi/v/t2s-cli.svg)](https://pypi.org/project/t2s-cli/)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)
+![T2S Screenshot](./snippet.png)
 
 A powerful, privacy-first terminal-based Text-to-SQL converter that transforms natural language queries into SQL statements using state-of-the-art AI models—all running locally on your machine. Because your database deserves the best, and so does your privacy.
 
@@ -117,7 +121,7 @@ T2S is packed with capabilities to streamline your database querying experience:
 
 ## AI Model Recommendations
 
-Choosing the right AI model is key to unlocking T2S’s full potential. Here’s how to pick one that fits your needs:
+Choosing the right AI model is key to unlocking T2S's full potential. Here's how to pick one that fits your needs:
 
 ### For Best Results (95%+ Accuracy)
 * **Gemma 3 (12B)** - Ideal for production environments and complex queries
@@ -138,7 +142,7 @@ T2S includes memory compatibility warnings to guide you toward the best model fo
 ### Quick Start
 ```bash
 pip install t2s-cli
-````
+```
 
 ### For Gemma Model Support
 

@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ..core.config import Config, DatabaseConfig
+from .mongodb_manager import MongoDBManager
 
 
 class DatabaseManager:
@@ -24,6 +25,7 @@ class DatabaseManager:
         self.logger = logging.getLogger(__name__)
         self.connections: Dict[str, Any] = {}
         self.engines: Dict[str, Any] = {}
+        self.mongodb_manager = MongoDBManager(config)
     
     async def initialize(self) -> None:
         """Initialize database connections."""
@@ -136,20 +138,43 @@ class DatabaseManager:
     
     async def _test_connection_config(self, db_config: DatabaseConfig) -> bool:
         """Test a database configuration."""
+        # Route MongoDB to MongoDB manager
+        if db_config.type == "mongodb":
+            try:
+                from pymongo import MongoClient
+                # Build connection string
+                if db_config.username and db_config.password:
+                    auth_part = f"{db_config.username}:{db_config.password}@"
+                else:
+                    auth_part = ""
+
+                host = db_config.host or "localhost"
+                port = db_config.port or 27017
+                connection_string = f"mongodb://{auth_part}{host}:{port}/"
+
+                client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
+                client.admin.command('ping')
+                client.close()
+                return True
+            except Exception as e:
+                self.logger.error(f"MongoDB connection test failed: {e}")
+                return False
+
+        # Handle SQL databases
         try:
             connection_string = self._create_connection_string(db_config)
             engine = create_engine(connection_string, pool_timeout=5, pool_recycle=300)
-            
+
             with engine.connect() as conn:
                 # Simple test query
                 if db_config.type == "sqlite":
                     conn.execute(text("SELECT 1"))
                 else:
                     conn.execute(text("SELECT 1"))
-            
+
             engine.dispose()
             return True
-            
+
         except Exception:
             return False
     
@@ -157,17 +182,27 @@ class DatabaseManager:
         """Test a database connection."""
         if db_name not in self.config.config.databases:
             raise ValueError(f"Database {db_name} not configured")
-        
+
         db_config = self.config.config.databases[db_name]
+
+        # Route to MongoDB manager if it's a MongoDB database
+        if db_config.type == "mongodb":
+            return await self.mongodb_manager.test_connection(db_name)
+
         return await self._test_connection_config(db_config)
     
     def get_connection(self, db_name: str) -> Any:
         """Get a database connection/engine."""
         if db_name not in self.config.config.databases:
             raise ValueError(f"Database {db_name} not configured")
-        
+
+        db_config = self.config.config.databases[db_name]
+
+        # Route to MongoDB manager if it's a MongoDB database
+        if db_config.type == "mongodb":
+            return self.mongodb_manager.get_connection(db_name)
+
         if db_name not in self.engines:
-            db_config = self.config.config.databases[db_name]
             connection_string = self._create_connection_string(db_config)
             self.engines[db_name] = create_engine(
                 connection_string,
@@ -175,22 +210,29 @@ class DatabaseManager:
                 pool_recycle=300,
                 echo=False
             )
-        
+
         return self.engines[db_name]
     
-    async def execute_query(self, sql: str, db_name: str) -> Dict[str, Any]:
-        """Execute a SQL query and return results."""
+    async def execute_query(self, query: str, db_name: str) -> Dict[str, Any]:
+        """Execute a SQL or MQL query and return results."""
+        db_config = self.config.config.databases[db_name]
+
+        # Route to MongoDB manager if it's a MongoDB database
+        if db_config.type == "mongodb":
+            return await self.mongodb_manager.execute_query(query, db_name)
+
+        # Handle SQL databases
         engine = self.get_connection(db_name)
-        
+
         try:
             with engine.connect() as conn:
                 # Execute the query
-                result = conn.execute(text(sql))
-                
+                result = conn.execute(text(query))
+
                 # Handle different query types
-                if sql.strip().upper().startswith('SELECT'):
+                if query.strip().upper().startswith('SELECT'):
                     # For SELECT queries, return data as DataFrame
-                    data = pd.read_sql(sql, conn)
+                    data = pd.read_sql(query, conn)
                     return {
                         "data": data,
                         "rows_affected": len(data),
@@ -205,7 +247,7 @@ class DatabaseManager:
                         "rows_affected": rows_affected,
                         "query_type": "modification"
                     }
-                    
+
         except SQLAlchemyError as e:
             self.logger.error(f"Database error executing query: {e}")
             raise RuntimeError(f"Database error: {str(e)}")
@@ -215,8 +257,15 @@ class DatabaseManager:
     
     async def get_schema_info(self, db_name: str) -> Dict[str, Any]:
         """Get comprehensive schema information for a database."""
+        db_config = self.config.config.databases[db_name]
+
+        # Route to MongoDB manager if it's a MongoDB database
+        if db_config.type == "mongodb":
+            return await self.mongodb_manager.get_schema_info(db_name)
+
+        # Handle SQL databases
         engine = self.get_connection(db_name)
-        
+
         try:
             inspector = inspect(engine)
             schema_info = {
@@ -339,14 +388,32 @@ class DatabaseManager:
             
             # Test connection status
             try:
-                # Quick synchronous test
-                engine = self.get_connection(name)
-                with engine.connect() as conn:
-                    conn.execute(text("SELECT 1"))
-                db_info["status"] = "connected"
-            except Exception:
+                if db_config.type == "mongodb":
+                    # Test MongoDB connection
+                    from pymongo import MongoClient
+                    if db_config.username and db_config.password:
+                        auth_part = f"{db_config.username}:{db_config.password}@"
+                    else:
+                        auth_part = ""
+
+                    host = db_config.host or "localhost"
+                    port = db_config.port or 27017
+                    connection_string = f"mongodb://{auth_part}{host}:{port}/"
+
+                    client = MongoClient(connection_string, serverSelectionTimeoutMS=2000)
+                    client.admin.command('ping')
+                    client.close()
+                    db_info["status"] = "connected"
+                else:
+                    # Test SQL database connection
+                    engine = self.get_connection(name)
+                    with engine.connect() as conn:
+                        conn.execute(text("SELECT 1"))
+                    db_info["status"] = "connected"
+            except Exception as e:
+                self.logger.debug(f"Connection test failed for {name}: {e}")
                 db_info["status"] = "error"
-            
+
             databases.append(db_info)
         
         return databases
