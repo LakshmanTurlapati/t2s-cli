@@ -138,20 +138,43 @@ class DatabaseManager:
     
     async def _test_connection_config(self, db_config: DatabaseConfig) -> bool:
         """Test a database configuration."""
+        # Route MongoDB to MongoDB manager
+        if db_config.type == "mongodb":
+            try:
+                from pymongo import MongoClient
+                # Build connection string
+                if db_config.username and db_config.password:
+                    auth_part = f"{db_config.username}:{db_config.password}@"
+                else:
+                    auth_part = ""
+
+                host = db_config.host or "localhost"
+                port = db_config.port or 27017
+                connection_string = f"mongodb://{auth_part}{host}:{port}/"
+
+                client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
+                client.admin.command('ping')
+                client.close()
+                return True
+            except Exception as e:
+                self.logger.error(f"MongoDB connection test failed: {e}")
+                return False
+
+        # Handle SQL databases
         try:
             connection_string = self._create_connection_string(db_config)
             engine = create_engine(connection_string, pool_timeout=5, pool_recycle=300)
-            
+
             with engine.connect() as conn:
                 # Simple test query
                 if db_config.type == "sqlite":
                     conn.execute(text("SELECT 1"))
                 else:
                     conn.execute(text("SELECT 1"))
-            
+
             engine.dispose()
             return True
-            
+
         except Exception:
             return False
     
@@ -365,14 +388,32 @@ class DatabaseManager:
             
             # Test connection status
             try:
-                # Quick synchronous test
-                engine = self.get_connection(name)
-                with engine.connect() as conn:
-                    conn.execute(text("SELECT 1"))
-                db_info["status"] = "connected"
-            except Exception:
+                if db_config.type == "mongodb":
+                    # Test MongoDB connection
+                    from pymongo import MongoClient
+                    if db_config.username and db_config.password:
+                        auth_part = f"{db_config.username}:{db_config.password}@"
+                    else:
+                        auth_part = ""
+
+                    host = db_config.host or "localhost"
+                    port = db_config.port or 27017
+                    connection_string = f"mongodb://{auth_part}{host}:{port}/"
+
+                    client = MongoClient(connection_string, serverSelectionTimeoutMS=2000)
+                    client.admin.command('ping')
+                    client.close()
+                    db_info["status"] = "connected"
+                else:
+                    # Test SQL database connection
+                    engine = self.get_connection(name)
+                    with engine.connect() as conn:
+                        conn.execute(text("SELECT 1"))
+                    db_info["status"] = "connected"
+            except Exception as e:
+                self.logger.debug(f"Connection test failed for {name}: {e}")
                 db_info["status"] = "error"
-            
+
             databases.append(db_info)
         
         return databases

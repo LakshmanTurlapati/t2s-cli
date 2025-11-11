@@ -94,6 +94,96 @@ class MongoDBManager:
             self.logger.error(f"Unexpected error executing query: {e}")
             raise RuntimeError(f"Query execution error: {str(e)}")
 
+    def _quote_unquoted_keys(self, js_str: str) -> str:
+        """Convert JavaScript object notation to valid JSON by quoting unquoted keys.
+
+        Handles:
+        - Unquoted keys: {$lookup: ...} -> {"$lookup": ...}
+        - Already-quoted keys: {"albums.Title": ...} -> unchanged
+        - String values: {msg: "Hello: World"} -> {"msg": "Hello: World"}
+        - Arrays: ["$field"] -> unchanged
+        - Nested objects: recursive processing
+        """
+        result = []
+        i = 0
+        in_string = False
+        string_char = None
+
+        while i < len(js_str):
+            char = js_str[i]
+
+            # Track string boundaries (both single and double quotes)
+            if char in ('"', "'") and (i == 0 or js_str[i-1] != '\\'):
+                if not in_string:
+                    in_string = True
+                    string_char = char
+                elif char == string_char:
+                    in_string = False
+                    string_char = None
+                result.append(char)
+                i += 1
+                continue
+
+            # Inside string, just copy character
+            if in_string:
+                result.append(char)
+                i += 1
+                continue
+
+            # Outside strings: look for unquoted keys
+            # Keys appear after: { , [ or whitespace, followed by identifier and :
+            if char in ('{', ',', '['):
+                result.append(char)
+                i += 1
+
+                # Skip whitespace after delimiter
+                while i < len(js_str) and js_str[i] in (' ', '\n', '\t', '\r'):
+                    result.append(js_str[i])
+                    i += 1
+
+                # Check if next token is an identifier (potential key)
+                if i < len(js_str) and (js_str[i].isalpha() or js_str[i] in ('$', '_')):
+                    # Collect the identifier
+                    identifier_start = i
+                    identifier = ''
+
+                    # Handle $ prefix
+                    if js_str[i] == '$':
+                        identifier += '$'
+                        i += 1
+
+                    # Collect alphanumeric and underscore characters
+                    while i < len(js_str) and (js_str[i].isalnum() or js_str[i] == '_'):
+                        identifier += js_str[i]
+                        i += 1
+
+                    # Skip whitespace after identifier
+                    spaces_after = ''
+                    while i < len(js_str) and js_str[i] in (' ', '\n', '\t', '\r'):
+                        spaces_after += js_str[i]
+                        i += 1
+
+                    # Check if followed by colon (making it a key)
+                    if i < len(js_str) and js_str[i] == ':':
+                        # This is an unquoted key - add quotes
+                        result.append('"')
+                        result.append(identifier)
+                        result.append('"')
+                        result.append(spaces_after)
+                        # Don't increment i - the colon will be added in next iteration
+                    else:
+                        # Not a key, just an identifier - keep as-is
+                        result.append(identifier)
+                        result.append(spaces_after)
+                        # Don't increment i - continue from current position
+                continue
+
+            # Copy all other characters as-is
+            result.append(char)
+            i += 1
+
+        return ''.join(result)
+
     def _execute_mql(self, db, mql: str) -> Dict[str, Any]:
         """Execute MQL query on the database."""
         import json
@@ -103,7 +193,102 @@ class MongoDBManager:
         mql = re.sub(r'//.*', '', mql)
         mql = mql.strip()
 
-        # Try to detect the query type and collection
+        # Remove trailing semicolons (MongoDB doesn't use them)
+        mql = mql.rstrip(';').strip()
+
+        # First, check for direct DB operations (no collection)
+        direct_db_match = re.search(r'^db\.(\w+)\s*\((.*)\)', mql, re.DOTALL)
+
+        if direct_db_match:
+            operation = direct_db_match.group(1)
+            params_str = direct_db_match.group(2).strip()
+
+            # List of direct DB operations
+            direct_db_operations = [
+                'getCollectionNames', 'listCollections', 'getCollectionInfos',
+                'adminCommand', 'runCommand', 'stats'
+            ]
+
+            if operation in direct_db_operations:
+                # Handle direct DB operations
+                if operation == 'getCollectionNames':
+                    collection_names = db.list_collection_names()
+                    df = pd.DataFrame([{"collection": name} for name in collection_names])
+                    return {
+                        "data": df,
+                        "rows_affected": len(collection_names),
+                        "query_type": "list_collections"
+                    }
+
+                elif operation == 'listCollections':
+                    collections = db.list_collections()
+                    collection_list = list(collections)
+                    # Filter to show only relevant fields (exclude metadata like info, options, idIndex)
+                    simplified_collections = [
+                        {"name": c.get("name"), "type": c.get("type", "collection")}
+                        for c in collection_list
+                    ]
+                    df = pd.DataFrame(simplified_collections)
+                    return {
+                        "data": df,
+                        "rows_affected": len(simplified_collections),
+                        "query_type": "list_collections"
+                    }
+
+                elif operation == 'getCollectionInfos':
+                    collection_infos = db.list_collections()
+                    infos = list(collection_infos)
+                    df = pd.DataFrame(infos)
+                    return {
+                        "data": df,
+                        "rows_affected": len(infos),
+                        "query_type": "collection_info"
+                    }
+
+                elif operation == 'stats':
+                    stats = db.command("dbStats")
+                    df = pd.DataFrame([stats])
+                    return {
+                        "data": df,
+                        "rows_affected": 1,
+                        "query_type": "stats"
+                    }
+
+                elif operation in ['adminCommand', 'runCommand']:
+                    # Parse the command from params
+                    if params_str:
+                        try:
+                            # Try JSON first
+                            command = json.loads(params_str)
+                        except (json.JSONDecodeError, ValueError):
+                            # Fallback to eval for JavaScript object notation
+                            try:
+                                # Provide namespace for common MongoDB commands
+                                # This handles ES6 shorthand syntax like {listCollections} -> {listCollections: 1}
+                                namespace = {
+                                    'listCollections': 1,
+                                    'listDatabases': 1,
+                                    'dbStats': 1,
+                                    'serverStatus': 1,
+                                    'buildInfo': 1,
+                                    'collStats': 1,
+                                    'hostInfo': 1,
+                                }
+                                command = eval(params_str, {"__builtins__": {}}, namespace)
+                            except Exception as e:
+                                raise ValueError(f"Failed to parse command parameters: {e}")
+
+                        result = db.command(command)
+                        df = pd.DataFrame([result])
+                        return {
+                            "data": df,
+                            "rows_affected": 1,
+                            "query_type": operation
+                        }
+                    else:
+                        raise ValueError(f"{operation} requires a command parameter")
+
+        # Try to detect collection-based operations
         collection_match = re.search(r'db\.(\w+)\.(\w+)\s*\((.*)\)', mql, re.DOTALL)
 
         if collection_match:
@@ -119,20 +304,43 @@ class MongoDBManager:
                 if query_str.strip():
                     # Handle both single and multiple parameters
                     query_str = query_str.strip()
+
                     if query_str.startswith('['):
                         # Aggregation pipeline
-                        query_params = json.loads(query_str)
+                        try:
+                            # Convert JavaScript object notation to valid JSON
+                            quoted_str = self._quote_unquoted_keys(query_str)
+                            query_params = json.loads(quoted_str)
+                        except (json.JSONDecodeError, ValueError) as json_err:
+                            self.logger.error(f"Pipeline parsing failed: {json_err}")
+                            self.logger.debug(f"Original query: {query_str[:200]}")
+                            raise ValueError(f"Cannot parse aggregation pipeline. Query: {query_str[:100]}... Error: {json_err}")
                     elif query_str.startswith('{'):
                         # Single document query
-                        query_params = json.loads(query_str)
+                        try:
+                            # Convert JavaScript object notation to valid JSON
+                            quoted_str = self._quote_unquoted_keys(query_str)
+                            query_params = json.loads(quoted_str)
+                        except (json.JSONDecodeError, ValueError) as json_err:
+                            self.logger.error(f"Query parsing failed: {json_err}")
+                            self.logger.debug(f"Original query: {query_str[:200]}")
+                            raise ValueError(f"Cannot parse query parameters. Query: {query_str[:100]}... Error: {json_err}")
                     else:
                         # Try to evaluate as Python
-                        query_params = eval(query_str)
+                        try:
+                            js_converted = query_str.replace('true', 'True').replace('false', 'False').replace('null', 'None')
+                            query_params = eval(js_converted, {"__builtins__": {}}, {})
+                        except Exception as eval_err:
+                            self.logger.error(f"Parameter parsing failed: {eval_err}")
+                            raise ValueError(f"Cannot parse query parameters: {eval_err}")
                 else:
                     query_params = {}
+            except ValueError:
+                # Re-raise ValueError to propagate clear error messages
+                raise
             except Exception as e:
-                self.logger.error(f"Failed to parse query parameters: {e}")
-                query_params = {}
+                self.logger.error(f"Unexpected error parsing query parameters: {e}")
+                raise ValueError(f"Failed to parse query parameters: {e}")
 
             # Execute based on operation
             if operation == "find":
@@ -232,12 +440,16 @@ class MongoDBManager:
                 collection = db[collection_name]
 
                 # Sample documents to infer schema
-                sample_docs = list(collection.find().limit(10))
+                # Use up to 100 documents for better schema inference
+                doc_count = collection.count_documents({})
+                sample_size = min(100, doc_count)
+                sample_docs = list(collection.find().limit(sample_size))
 
                 if not sample_docs:
                     schema_info["collections"][collection_name] = {
                         "fields": [],
                         "sample_count": 0,
+                        "document_count": 0,
                         "indexes": []
                     }
                     continue
@@ -245,12 +457,15 @@ class MongoDBManager:
                 # Infer schema from samples
                 fields = set()
                 field_types = {}
+                field_frequency = {}  # Track how often each field appears
 
                 for doc in sample_docs:
                     for key, value in doc.items():
                         fields.add(key)
                         if key not in field_types:
                             field_types[key] = type(value).__name__
+                        # Track field frequency
+                        field_frequency[key] = field_frequency.get(key, 0) + 1
 
                 # Get indexes
                 indexes = []
@@ -260,14 +475,18 @@ class MongoDBManager:
                         "keys": list(index.get("key", {}).keys())
                     })
 
-                # Get document count
-                doc_count = collection.count_documents({})
+                # Calculate field frequency percentages
+                field_frequency_pct = {
+                    field: f"{count}/{sample_size} ({int(count/sample_size*100)}%)"
+                    for field, count in field_frequency.items()
+                }
 
                 schema_info["collections"][collection_name] = {
                     "fields": list(fields),
                     "field_types": field_types,
+                    "field_frequency": field_frequency_pct,
                     "document_count": doc_count,
-                    "sample_count": len(sample_docs),
+                    "sample_count": sample_size,
                     "indexes": indexes
                 }
 
@@ -318,3 +537,54 @@ class MongoDBManager:
         for db_name in list(self.connections.keys()):
             self.close_connection(db_name)
         self.console.print("[green]All MongoDB connections closed[/green]")
+
+    def list_databases(self, host: str = "localhost", port: int = 27017, username: str = None, password: str = None) -> List[str]:
+        """List all databases available on a MongoDB server."""
+        try:
+            # Build connection string
+            if username and password:
+                auth_part = f"{username}:{password}@"
+            else:
+                auth_part = ""
+
+            connection_string = f"mongodb://{auth_part}{host}:{port}/"
+
+            client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
+            databases = client.list_database_names()
+            client.close()
+
+            return databases
+
+        except Exception as e:
+            self.logger.error(f"Error listing databases: {e}")
+            return []
+
+    def discover_local_mongodb(self) -> List[Dict[str, Any]]:
+        """Discover MongoDB instances on localhost."""
+        discovered = []
+        common_ports = [27017, 27018, 27019]  # Common MongoDB ports
+
+        for port in common_ports:
+            try:
+                client = MongoClient(f"mongodb://localhost:{port}/", serverSelectionTimeoutMS=1000)
+                client.admin.command('ping')
+
+                # Get server info
+                server_info = client.server_info()
+                databases = client.list_database_names()
+
+                discovered.append({
+                    "host": "localhost",
+                    "port": port,
+                    "version": server_info.get("version", "unknown"),
+                    "databases": databases,
+                    "database_count": len(databases)
+                })
+
+                client.close()
+
+            except Exception:
+                # Port not accessible or no MongoDB running
+                continue
+
+        return discovered

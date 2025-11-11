@@ -20,6 +20,9 @@ from ..models.model_manager import ModelManager
 from ..database.db_manager import DatabaseManager
 from ..utils.schema_analyzer import SchemaAnalyzer
 from ..utils.sql_validator import SQLValidator
+from .sql_engine import SQLEngine
+from .mql_engine import MQLEngine
+from ..utils.mql_validator import MQLValidator
 
 
 @dataclass
@@ -45,8 +48,12 @@ class T2SEngine:
         self.model_manager = ModelManager(self.config)
         self.db_manager = DatabaseManager(self.config)
         self.schema_analyzer = SchemaAnalyzer(self.config)
-        self.sql_validator = SQLValidator()
-        
+
+        # Initialize SQL and MQL engines
+        self.sql_engine = SQLEngine(self.config, self.model_manager)
+        self.mql_engine = MQLEngine(self.config, self.model_manager)
+        self.mql_validator = MQLValidator()
+
         # Setup logging
         logging.basicConfig(level=logging.DEBUG)
         self.logger = logging.getLogger(__name__)
@@ -72,17 +79,26 @@ class T2SEngine:
         if not self.config.config.selected_model:
             self.console.print("[yellow]No model selected. Please configure a model first.[/yellow]")
             return
-        
-        # Initialize model manager with loading animation
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[cyan]Initializing AI model[/cyan]"),
-            console=self.console,
-            transient=False
-        ) as progress:
-            task = progress.add_task("", total=None)
+
+        # Initialize model manager
+        # Only show spinner for local models (not external API models)
+        selected_model = self.config.config.selected_model
+        is_external_api = self.model_manager.external_api_manager.is_api_model(selected_model)
+
+        if is_external_api:
+            # External API models don't need initialization - just initialize silently
             await self.model_manager.initialize()
-        
+        else:
+            # Local models need loading - show spinner
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]Initializing AI model[/cyan]"),
+                console=self.console,
+                transient=True  # Make it disappear after completion
+            ) as progress:
+                task = progress.add_task("", total=None)
+                await self.model_manager.initialize()
+
         # Initialize database connections
         await self.db_manager.initialize()
         
@@ -90,8 +106,20 @@ class T2SEngine:
     
     async def process_query(self, natural_language_query: str, database_name: Optional[str] = None) -> QueryResult:
         """Process a natural language query and return results."""
+        # Detect database type and route to appropriate engine
+        db_type = self._detect_database_type()
+
+        if db_type == "mongodb":
+            return await self._process_mql_query(natural_language_query, database_name)
+        else:
+            return await self._process_sql_query(natural_language_query, database_name)
+
+    async def _process_sql_query(self, natural_language_query: str, database_name: Optional[str] = None) -> QueryResult:
+        """Process a SQL query using the SQL engine."""
         start_time = datetime.now()
-        
+        generated_sql = ""  # Initialize to preserve in error cases
+        validated_sql = ""
+
         try:
             # Step 1: Analyze and get relevant schema
             with Progress(
@@ -102,8 +130,8 @@ class T2SEngine:
             ) as progress:
                 task = progress.add_task("", total=None)
                 schema_info = await self._get_relevant_schema(natural_language_query, database_name)
-            
-            # Step 2: Generate SQL using AI model
+
+            # Step 2: Generate SQL using SQL engine
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[cyan]Generating SQL query[/cyan]"),
@@ -111,8 +139,8 @@ class T2SEngine:
                 transient=True
             ) as progress:
                 task = progress.add_task("", total=None)
-                generated_sql = await self._generate_sql(natural_language_query, schema_info)
-            
+                generated_sql = await self.sql_engine.generate_sql(natural_language_query, schema_info)
+
             # Step 3: Validate and correct SQL
             with Progress(
                 SpinnerColumn(),
@@ -121,8 +149,8 @@ class T2SEngine:
                 transient=True
             ) as progress:
                 task = progress.add_task("", total=None)
-                validated_sql = await self._validate_and_correct_sql(generated_sql)
-            
+                validated_sql = await self.sql_engine.validate_sql(generated_sql)
+
             # Step 4: Execute SQL
             with Progress(
                 SpinnerColumn(),
@@ -132,7 +160,7 @@ class T2SEngine:
             ) as progress:
                 task = progress.add_task("", total=None)
                 execution_result = await self._execute_sql(validated_sql, database_name)
-            
+
             # Step 5: Generate analysis
             with Progress(
                 SpinnerColumn(),
@@ -142,13 +170,13 @@ class T2SEngine:
             ) as progress:
                 task = progress.add_task("", total=None)
                 analysis = await self._generate_analysis(
-                    natural_language_query, 
-                    validated_sql, 
+                    natural_language_query,
+                    validated_sql,
                     execution_result["data"]
                 )
-            
+
             execution_time = (datetime.now() - start_time).total_seconds()
-            
+
             return QueryResult(
                 original_query=natural_language_query,
                 generated_sql=generated_sql,
@@ -158,15 +186,119 @@ class T2SEngine:
                 data=execution_result.get("data"),
                 analysis=analysis
             )
-            
+
         except Exception as e:
             execution_time = (datetime.now() - start_time).total_seconds()
-            self.logger.error(f"Error processing query: {e}")
-            
+            self.logger.error(f"Error processing SQL query: {e}")
+            if generated_sql:
+                self.logger.info(f"Generated SQL before error: {generated_sql}")
+
             return QueryResult(
                 original_query=natural_language_query,
-                generated_sql="",
-                validated_sql="",
+                generated_sql=generated_sql,  # Preserve generated SQL even on error
+                validated_sql=validated_sql,  # Preserve validated SQL if available
+                execution_time=execution_time,
+                rows_affected=0,
+                data=None,
+                analysis="",
+                error=str(e)
+            )
+
+    async def _process_mql_query(self, natural_language_query: str, database_name: Optional[str] = None) -> QueryResult:
+        """Process a MongoDB query using the MQL engine."""
+        start_time = datetime.now()
+        generated_mql = ""  # Initialize to preserve in error cases
+        validated_mql = ""
+
+        try:
+            # Step 1: Analyze and get relevant schema
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]Analyzing database schema[/cyan]"),
+                console=self.console,
+                transient=True
+            ) as progress:
+                task = progress.add_task("", total=None)
+                schema_info = await self._get_relevant_schema(natural_language_query, database_name)
+
+            # Step 2: Generate MQL using MQL engine
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]Generating MQL query[/cyan]"),
+                console=self.console,
+                transient=True
+            ) as progress:
+                task = progress.add_task("", total=None)
+                generated_mql = await self.mql_engine.generate_mql(natural_language_query, schema_info)
+
+            # Step 3: Validate MQL
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]Validating MQL query[/cyan]"),
+                console=self.console,
+                transient=True
+            ) as progress:
+                task = progress.add_task("", total=None)
+                validated_mql = await self.mql_validator.validate_and_correct(generated_mql)
+
+            # Step 3.5: Validate fields against schema (skip for aggregation pipelines)
+            # Aggregation pipelines create dynamic fields through stages, so field validation produces false positives
+            if '.aggregate(' not in validated_mql:
+                is_valid, error_msg = self.mql_engine.validate_mql_fields(validated_mql, schema_info)
+                if not is_valid:
+                    self.logger.warning(f"MQL field validation failed for query '{validated_mql}': {error_msg}")
+                    self.console.print(f"[yellow]Warning: {error_msg}[/yellow]")
+                    self.console.print(f"[yellow]Generated query: {validated_mql}[/yellow]")
+                    # Continue anyway, but log the issue
+            else:
+                self.logger.debug("Skipping field validation for aggregation pipeline (dynamic fields)")
+
+            # Step 4: Execute MQL
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]Executing query[/cyan]"),
+                console=self.console,
+                transient=True
+            ) as progress:
+                task = progress.add_task("", total=None)
+                execution_result = await self._execute_sql(validated_mql, database_name)  # Uses db_manager which routes to MongoDB
+
+            # Step 5: Generate analysis
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[cyan]Generating analysis[/cyan]"),
+                console=self.console,
+                transient=True
+            ) as progress:
+                task = progress.add_task("", total=None)
+                analysis = await self._generate_analysis(
+                    natural_language_query,
+                    validated_mql,
+                    execution_result["data"]
+                )
+
+            execution_time = (datetime.now() - start_time).total_seconds()
+
+            return QueryResult(
+                original_query=natural_language_query,
+                generated_sql=generated_mql,
+                validated_sql=validated_mql,
+                execution_time=execution_time,
+                rows_affected=execution_result.get("rows_affected", 0),
+                data=execution_result.get("data"),
+                analysis=analysis
+            )
+
+        except Exception as e:
+            execution_time = (datetime.now() - start_time).total_seconds()
+            self.logger.error(f"Error processing MQL query: {e}")
+            if generated_mql:
+                self.logger.info(f"Generated MQL before error: {generated_mql}")
+
+            return QueryResult(
+                original_query=natural_language_query,
+                generated_sql=generated_mql,  # Preserve generated MQL even on error
+                validated_sql=validated_mql,  # Preserve validated MQL if available
                 execution_time=execution_time,
                 rows_affected=0,
                 data=None,
@@ -179,21 +311,31 @@ class T2SEngine:
         db_name = database_name or self.config.config.default_database
         if not db_name:
             raise ValueError("No database specified and no default database configured")
-        
+
         # Get database connection
         db_connection = self.db_manager.get_connection(db_name)
-        
+
         # Get full schema first
         from ..database.db_manager import DatabaseManager
         db_manager = DatabaseManager(self.config)
         full_schema = await db_manager.get_schema_info(db_name)
-        
-        # Optimize schema for the model - keep it comprehensive but concise
+
+        # Detect database type
+        db_config = self.config.config.databases[db_name]
+        db_type = db_config.type.lower()
+
+        # For MongoDB, return the schema as-is (collections structure)
+        if db_type == "mongodb":
+            self.logger.info(f"Sending MongoDB schema to model: {len(full_schema.get('collections', {}))} collections")
+            self.logger.debug(f"MongoDB schema: {full_schema}")
+            return full_schema
+
+        # For SQL databases, optimize the schema structure
         optimized_schema = {
             "tables": {},
             "relationships": []
         }
-        
+
         # Take all tables but optimize the information
         for table_name, table_info in full_schema.get("tables", {}).items():
             optimized_table = {
@@ -202,220 +344,20 @@ class T2SEngine:
                 "primary_keys": table_info.get("primary_keys", []),
                 "foreign_keys": table_info.get("foreign_keys", [])
             }
-            
+
             optimized_schema["tables"][table_name] = optimized_table
-        
+
         # Add key relationships
         optimized_schema["relationships"] = full_schema.get("relationships", [])[:5]  # Top 5 relationships
-        
-        self.logger.info(f"Sending optimized schema to model: {len(optimized_schema.get('tables', {}))} tables")
-        
+
+        self.logger.info(f"Sending optimized SQL schema to model: {len(optimized_schema.get('tables', {}))} tables")
+
         # Debug logging to see exact schema being sent
         self.logger.debug(f"Full optimized schema: {optimized_schema}")
         for table_name, table_data in optimized_schema.get("tables", {}).items():
             self.logger.debug(f"Table {table_name}: columns={table_data.get('columns', [])}, types={table_data.get('column_types', {})}")
-        
+
         return optimized_schema
-    
-    async def _generate_sql(self, natural_query: str, schema_info: Dict[str, Any]) -> str:
-        """Generate SQL or MQL query using ONLY the AI model - no fallbacks, no repairs."""
-        # Detect database type
-        db_type = self._detect_database_type()
-
-        # Create a structured prompt with full schema information
-        system_prompt = self._create_system_prompt(schema_info)
-        user_prompt = natural_query
-
-        # Debug logging to see exact prompts being sent
-        self.logger.debug(f"System prompt being sent to model: {system_prompt[:500]}...")
-        self.logger.debug(f"User prompt: {user_prompt}")
-
-        try:
-            # Generate using AI model - this is the ONLY attempt
-            self.logger.info(f"Attempting AI model generation for {db_type.upper()} (NO FALLBACKS)")
-            generated_text = await self.model_manager.generate_sql(system_prompt, user_prompt)
-
-            # Extract query based on database type
-            if db_type == "mongodb":
-                query = self._extract_mql_query(generated_text)
-                query_type = "MQL"
-            else:
-                query = self._extract_sql_query(generated_text)
-                query_type = "SQL"
-
-            if not query or query.strip() == "":
-                raise ValueError(f"No {query_type} query could be extracted from model output")
-
-            self.logger.info(f"✅ AI model successfully generated valid {query_type}: {query}")
-            return query
-
-        except Exception as e:
-            # NO FALLBACKS - throw the error
-            error_msg = f"AI model failed to generate valid query: {str(e)}"
-            self.logger.error(error_msg)
-            raise RuntimeError(error_msg)
-    
-    def _extract_sql_query(self, generated_text: str) -> str:
-        """Basic SQL extraction with minimal processing - NO REPAIRS."""
-        if not generated_text:
-            return ""
-        
-        text = generated_text.strip()
-        
-        # First, try to find SQL in code blocks
-        code_block_match = re.search(r'```(?:sql)?\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
-        if code_block_match:
-            sql_content = code_block_match.group(1).strip()
-            # If there are multiple statements in code block, take only the first
-            statements = sql_content.split(';')
-            if statements and statements[0].strip():
-                return statements[0].strip() + ';'
-        
-        # Split text into lines and process line by line to find the first SQL statement
-        lines = text.split('\n')
-        sql_statement = ""
-        collecting_sql = False
-        
-        for line in lines:
-            line_stripped = line.strip()
-            
-            # Start collecting when we find a SQL keyword at the beginning of a line
-            if re.match(r'^(SELECT|INSERT|UPDATE|DELETE|CREATE|WITH)\s+', line_stripped, re.IGNORECASE):
-                if not collecting_sql:  # Only start if we're not already collecting
-                    collecting_sql = True
-                    sql_statement = line_stripped
-                    # If this line ends with semicolon, we're done
-                    if line_stripped.endswith(';'):
-                        break
-                else:
-                    # We hit another SQL statement while collecting, stop here
-                    break
-            elif collecting_sql:
-                # We're collecting a multi-line SQL statement
-                if line_stripped:
-                    # Skip lines that look like explanatory text or other queries
-                    if re.search(r'(what|list|show|find|get|query:|sql:|answer:|result:)', line_stripped, re.IGNORECASE):
-                        break  # Stop collecting if we hit explanatory text
-                    
-                    sql_statement += " " + line_stripped
-                    
-                    # If this line ends with semicolon, we're done
-                    if line_stripped.endswith(';'):
-                        break
-                else:
-                    # Empty line while collecting - might indicate end of statement
-                    if sql_statement and not sql_statement.endswith(';'):
-                        # Add semicolon if missing and stop
-                        sql_statement += ';'
-                    break
-        
-        # Clean up the extracted SQL
-        if sql_statement:
-            # Remove any trailing explanatory text
-            sql_statement = re.sub(r'\s+(what|list|show|find|get|query|sql|answer|result).*$', '', sql_statement, flags=re.IGNORECASE)
-            # Ensure it ends with semicolon
-            if not sql_statement.endswith(';'):
-                sql_statement += ';'
-            
-            # Validate it looks like SQL
-            if self._is_basic_sql_structure(sql_statement):
-                return sql_statement.strip()
-        
-        # Ultimate fallback: try regex but only take content before any explanatory keywords
-        sql_patterns = [
-            r'(SELECT[^;]*?)(?:\s+(?:what|list|show|find|get|query|sql|answer|result)|;|$)',
-            r'(INSERT[^;]*?)(?:\s+(?:what|list|show|find|get|query|sql|answer|result)|;|$)',
-            r'(UPDATE[^;]*?)(?:\s+(?:what|list|show|find|get|query|sql|answer|result)|;|$)',
-            r'(DELETE[^;]*?)(?:\s+(?:what|list|show|find|get|query|sql|answer|result)|;|$)',
-            r'(CREATE[^;]*?)(?:\s+(?:what|list|show|find|get|query|sql|answer|result)|;|$)',
-        ]
-        
-        for pattern in sql_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                sql = match.group(1).strip()
-                if self._is_basic_sql_structure(sql):
-                    if not sql.endswith(';'):
-                        sql += ';'
-                    return sql
-        
-        # If nothing worked, return empty string
-        return ""
-    
-    def _is_basic_sql_structure(self, sql: str) -> bool:
-        """Basic SQL structure validation - minimal checks only."""
-        if not sql:
-            return False
-
-        sql_upper = sql.upper().strip()
-
-        # Must start with a valid SQL command
-        valid_starts = ["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "SHOW", "DESCRIBE"]
-        return any(sql_upper.startswith(start) for start in valid_starts)
-
-    def _extract_mql_query(self, generated_text: str) -> str:
-        """Extract MongoDB query from generated text."""
-        if not generated_text:
-            return ""
-
-        text = generated_text.strip()
-
-        # Try to find MQL in code blocks (javascript, json, or plain)
-        code_block_patterns = [
-            r'```(?:javascript|js|json|mql)?\s*(.*?)\s*```',
-            r'```\s*(db\..*?)\s*```'
-        ]
-
-        for pattern in code_block_patterns:
-            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-            if match:
-                mql_content = match.group(1).strip()
-                # Clean up and validate
-                if self._is_valid_mql_structure(mql_content):
-                    return mql_content
-
-        # Try to find db.collection patterns
-        mql_patterns = [
-            r'(db\.\w+\.(?:find|aggregate|countDocuments|distinct|insertOne|updateOne|deleteOne|findOne)\s*\([^)]*\))',
-            r'(db\.\w+\.(?:find|aggregate|countDocuments|distinct)\s*\([\s\S]*?\)(?:\s*\.(?:sort|limit|skip)\s*\([^)]*\))*)',
-        ]
-
-        for pattern in mql_patterns:
-            match = re.search(pattern, text, re.DOTALL)
-            if match:
-                mql = match.group(1).strip()
-                if self._is_valid_mql_structure(mql):
-                    return mql
-
-        # Last resort: look for any line starting with db.
-        lines = text.split('\n')
-        for line in lines:
-            line_stripped = line.strip()
-            if line_stripped.startswith('db.'):
-                if self._is_valid_mql_structure(line_stripped):
-                    return line_stripped
-
-        return ""
-
-    def _is_valid_mql_structure(self, mql: str) -> bool:
-        """Basic MQL structure validation."""
-        if not mql:
-            return False
-
-        mql = mql.strip()
-
-        # Must start with db.
-        if not mql.startswith('db.'):
-            return False
-
-        # Must contain a valid operation
-        valid_operations = [
-            'find', 'aggregate', 'countDocuments', 'distinct',
-            'insertOne', 'insertMany', 'updateOne', 'updateMany',
-            'deleteOne', 'deleteMany', 'findOne', 'replaceOne'
-        ]
-
-        return any(f'.{op}(' in mql for op in valid_operations)
 
     def _detect_database_type(self) -> str:
         """Detect the current database type from configuration."""
@@ -425,388 +367,6 @@ class T2SEngine:
             return db_config.type.lower()
         return "sqlite"  # Default fallback
 
-    def _create_system_prompt(self, schema_info: Dict[str, Any]) -> str:
-        """Create system prompt optimized for the current model's intelligence level."""
-
-        # Detect database type
-        db_type = self._detect_database_type()
-
-        # Get current model information
-        current_model_id = self.config.config.selected_model
-        if not current_model_id or current_model_id not in self.config.SUPPORTED_MODELS:
-            # Fallback based on database type
-            if db_type == "mongodb":
-                return self._get_mongodb_intermediate_prompt(schema_info)
-            else:
-                return self._get_sqlcoder_prompt(schema_info)
-
-        model_config = self.config.SUPPORTED_MODELS[current_model_id]
-
-        # Determine model intelligence level based on parameters and specialization
-        intelligence_level = self._determine_model_intelligence(current_model_id, model_config)
-
-        # Create prompt based on intelligence level and database type
-        if db_type == "mongodb":
-            return self._get_intelligence_based_mongodb_prompt(intelligence_level, schema_info)
-        else:
-            return self._get_intelligence_based_prompt(intelligence_level, schema_info, current_model_id)
-    
-    def _determine_model_intelligence(self, model_id: str, model_config) -> str:
-        """Determine the intelligence level of a model based on its characteristics."""
-        
-        # SQLCoder is specialized for SQL - treat as expert
-        if "sqlcoder" in model_id.lower():
-            return "expert"
-        
-        # Llama/Mistral/Qwen models are generally quite capable - treat as advanced
-        if any(model_name in model_id.lower() for model_name in ["llama", "phi", "mistral", "qwen"]):
-            return "advanced"
-        
-        # SmolLM needs simpler prompts
-        if "smollm" in model_id.lower():
-            return "simple"
-            
-        # Everything else uses intermediate level  
-        return "intermediate"
-    
-    def _get_intelligence_based_prompt(self, intelligence_level: str, schema_info: Dict[str, Any], model_id: str) -> str:
-        """Get system prompt based on model intelligence level."""
-        
-        # Build table metadata string
-        table_metadata_string = self._build_table_metadata_string(schema_info)
-        db_type = self._detect_database_type()
-        
-        # Log the intelligence level for debugging
-        self.logger.info(f"🧠 Model '{model_id}' classified as '{intelligence_level}' intelligence level")
-        
-        if intelligence_level == "expert":
-            # SQLCoder prompt for expert models
-            return self._get_sqlcoder_prompt(schema_info)
-        elif intelligence_level == "advanced":
-            # Advanced prompt for capable models like Llama
-            return self._get_advanced_prompt(db_type, schema_info)
-        elif intelligence_level == "simple":
-            # Simple prompt for smaller models like SmolLM
-            return self._get_simple_prompt(db_type, schema_info)
-        else:
-            # Intermediate prompt for all other models
-            return self._get_intermediate_prompt(db_type, schema_info)
-    
-    def _build_table_metadata_string(self, schema_info: Dict[str, Any]) -> str:
-        """Build table metadata string in a consistent format."""
-        tables_info = []
-        
-        for table_name, table_data in schema_info.get("tables", {}).items():
-            columns = table_data.get("columns", [])
-            column_types = table_data.get("column_types", {})
-            primary_keys = table_data.get("primary_keys", [])
-            foreign_keys = table_data.get("foreign_keys", [])
-            
-            # Create column definitions with types and constraints
-            column_defs = []
-            for col in columns:
-                col_type = column_types.get(col, "TEXT")
-                pk_marker = " PRIMARY KEY" if col in primary_keys else ""
-                column_defs.append(f"  {col} {col_type}{pk_marker}")
-            
-            # Add foreign key comments
-            fk_comments = []
-            for fk in foreign_keys:
-                if isinstance(fk, dict) and "constrained_columns" in fk and "referred_table" in fk:
-                    fk_col = fk["constrained_columns"][0] if fk["constrained_columns"] else "unknown"
-                    ref_table = fk["referred_table"]
-                    ref_col = fk.get("referred_columns", ["id"])[0]
-                    fk_comments.append(f"-- {fk_col} references {ref_table}({ref_col})")
-            
-            table_def = f"CREATE TABLE {table_name} (\n" + ",\n".join(column_defs) + "\n);"
-            if fk_comments:
-                table_def += "\n" + "\n".join(fk_comments)
-            
-            tables_info.append(table_def)
-        
-        return "\n\n".join(tables_info)
-
-    def _build_simplified_schema_string(self, schema_info: Dict[str, Any]) -> str:
-        """Build simplified schema string with only essential information - no sample data."""
-        schema_parts = []
-        
-        # Tables with columns and types, including explicit FK notation
-        for table_name, table_data in schema_info.get("tables", {}).items():
-            columns = table_data.get("columns", [])
-            column_types = table_data.get("column_types", {})
-            primary_keys = table_data.get("primary_keys", [])
-            foreign_keys = table_data.get("foreign_keys", [])
-            
-            # Build foreign key map for this table
-            fk_map = {}
-            for fk in foreign_keys:
-                if isinstance(fk, dict) and "constrained_columns" in fk and "referred_table" in fk:
-                    fk_col = fk["constrained_columns"][0] if fk["constrained_columns"] else "unknown"
-                    ref_table = fk["referred_table"]
-                    ref_col = fk.get("referred_columns", ["id"])[0]
-                    fk_map[fk_col] = f"{ref_table}.{ref_col}"
-            
-            # Simple column list with types and FK notation
-            column_list = []
-            for col in columns:
-                col_type = column_types.get(col, "TEXT")
-                if col in primary_keys:
-                    column_list.append(f"{col}: {col_type} (PK)")
-                elif col in fk_map:
-                    column_list.append(f"{col}: {col_type} (FK to {fk_map[col]})")
-                else:
-                    column_list.append(f"{col}: {col_type}")
-            
-            table_info = f"{table_name}: {', '.join(column_list)}"
-            schema_parts.append(table_info)
-        
-        # Add relationships section
-        relationships = []
-        for table_name, table_data in schema_info.get("tables", {}).items():
-            for fk in table_data.get("foreign_keys", []):
-                if isinstance(fk, dict) and "constrained_columns" in fk and "referred_table" in fk:
-                    fk_col = fk["constrained_columns"][0] if fk["constrained_columns"] else "unknown"
-                    ref_table = fk["referred_table"]
-                    ref_col = fk.get("referred_columns", ["id"])[0]
-                    relationships.append(f"{table_name}.{fk_col} -> {ref_table}.{ref_col}")
-        
-        if relationships:
-            schema_parts.append("")  # Add blank line before relationships
-            schema_parts.append("Relationships:")
-            schema_parts.extend(relationships)
-        
-        return "\n".join(schema_parts)
-    
-    def _get_sqlcoder_prompt(self, schema_info: Dict[str, Any]) -> str:
-        """Get the original SQLCoder prompt - for expert models."""
-        db_type = self._detect_database_type()
-        table_metadata_string = self._build_table_metadata_string(schema_info)
-        return self._get_database_specific_prompt(db_type, table_metadata_string)
-    
-    def _get_intermediate_prompt(self, db_type: str, schema_info: Dict[str, Any]) -> str:
-        """Intermediate prompt for medium models (4B) - detailed yet concise, guiding them through SQL generation steps."""
-        
-        # Use simplified schema with explicit FK notation
-        simplified_schema = self._build_simplified_schema_string(schema_info)
-        
-        # Get the first table for example
-        first_table = list(schema_info.get("tables", {}).keys())[0] if schema_info.get("tables") else "customers"
-        
-        return f"""You are a specialized Text-to-SQL model. Your primary task is to translate the natural language 'Query' into an accurate SQL statement using the provided 'Tables' schema.
-
-Follow these steps:
-1. Carefully analyze the 'Query' to understand the information being requested.
-2. Examine the 'Tables' schema to identify the relevant tables and columns.
-3. Construct a single, syntactically correct SQL query that retrieves the requested information.
-4. Refer to the 'Example' for the general format of the expected SQL output.
-5. Respond ONLY with the generated SQL query. Do not add any explanations, comments, or any text other than the SQL itself.
-
-Tables:
-{simplified_schema}
-
-Example:
-SELECT * FROM {first_table};
-
-Query: {{user_question}}
-SQL:"""
-    
-    def _get_advanced_prompt(self, db_type: str, schema_info: Dict[str, Any]) -> str:
-        """Advanced prompt for capable models like Llama - more contextual and flexible."""
-        
-        # Use simplified schema but with more context
-        simplified_schema = self._build_simplified_schema_string(schema_info)
-        db_rules = self._get_db_specific_rules(db_type)
-        
-        # Get the first table for example
-        first_table = list(schema_info.get("tables", {}).keys())[0] if schema_info.get("tables") else "customers"
-        
-        return f"""You are an expert SQL developer. Your task is to convert natural language questions into accurate, efficient SQL queries.
-
-{db_rules}
-
-DATABASE SCHEMA:
-{simplified_schema}
-
-INSTRUCTIONS:
-1. Analyze the user's question carefully to understand what data they want
-2. Use the provided schema to identify relevant tables and columns
-3. Write clean, efficient SQL that follows {db_type.upper()} syntax
-4. Use appropriate JOINs when data spans multiple tables
-5. Include proper WHERE clauses for filtering
-6. Use ORDER BY and LIMIT when appropriate for the question
-7. Return ONLY the SQL query, no explanations or additional text
-
-EXAMPLE:
-Question: "Show me all customers"
-SQL: SELECT * FROM {first_table};
-
-Now convert this question to SQL:
-{{user_question}}
-
-SQL:"""
-    
-    def _get_simple_prompt(self, db_type: str, schema_info: Dict[str, Any]) -> str:
-        """Simple prompt for smaller models like SmolLM - very direct and minimal."""
-        
-        # Get the first few tables only for simplicity
-        tables = list(schema_info.get("tables", {}).items())[:5]
-        
-        # Build a very simple schema string
-        schema_lines = []
-        for table_name, table_data in tables:
-            columns = table_data.get("columns", [])
-            schema_lines.append(f"Table {table_name}: {', '.join(columns[:10])}")  # Limit columns too
-        
-        simple_schema = "\n".join(schema_lines)
-        
-        return f"""Convert the question to a SQL query.
-
-Database tables:
-{simple_schema}
-
-Question: {{user_question}}
-
-SQL query:"""
-
-    def _get_db_specific_rules(self, db_type: str) -> str:
-        """Get database-specific rules for advanced prompts."""
-        
-        if db_type == "sqlite":
-            return """DATABASE-SPECIFIC RULES:
-- Use SQLite functions: date('now'), datetime(), COALESCE, IFNULL
-- Use CAST(column AS FLOAT) for ratios
-- Use double quotes for identifiers with spaces
-- Use LIMIT n for row limits
-- Query system tables: sqlite_master"""
-        
-        elif db_type == "postgresql":
-            return """DATABASE-SPECIFIC RULES:
-- Use PostgreSQL functions: NOW(), CURRENT_DATE, STRING_AGG, ARRAY_AGG
-- Use column::FLOAT for type casting
-- Use LIMIT n OFFSET m for pagination
-- Query system: information_schema.tables, information_schema.columns
-- Use double quotes for identifiers, single quotes for strings"""
-        
-        elif db_type == "mysql":
-            return """DATABASE-SPECIFIC RULES:
-- Use MySQL functions: NOW(), CURDATE(), GROUP_CONCAT
-- Use CAST(column AS DECIMAL) for precise numbers
-- Use LIMIT offset, count for pagination
-- Query system: information_schema.tables, information_schema.columns
-- Use backticks for identifiers, single quotes for strings"""
-        
-        else:
-            return """DATABASE-SPECIFIC RULES:
-- Use standard SQL functions: COALESCE, LENGTH, SUBSTRING
-- Avoid database-specific features
-- Use proper data type casting for calculations"""
-    
-    def _detect_database_type(self) -> str:
-        """Detect the current database type from configuration."""
-        default_db = self.config.config.default_database
-        if default_db and default_db in self.config.config.databases:
-            db_config = self.config.config.databases[default_db]
-            return db_config.type.lower()
-        return "sqlite"  # Default fallback
-    
-    def _get_database_specific_prompt(self, db_type: str, table_metadata_string: str) -> str:
-        """Get database-specific system prompt for SQLCoder."""
-
-        if db_type == "mongodb":
-            return self._get_mongodb_expert_prompt(table_metadata_string)
-
-        if db_type == "sqlite":
-            return f"""### Instructions:
-Your task is to convert a question into a SQL query, given a SQLite database schema.
-Adhere to these rules:
-- **Use SQLite syntax only** - no PostgreSQL or MySQL specific features
-- **Use Table Aliases** to prevent ambiguity. For example, `SELECT c.name, o.total FROM customers c JOIN orders o ON c.id = o.customer_id`
-- **For LIMIT queries**, use SQLite syntax: `LIMIT n`
-- **For date/time**, use SQLite functions like `date('now')`, `datetime('now')`
-- **For schema queries**, use `sqlite_master` table: `SELECT name FROM sqlite_master WHERE type='table'`
-- When creating ratios, always cast the numerator as float: `CAST(column AS FLOAT)`
-- **Use double quotes for identifiers** if they contain spaces or special characters
-- **Common SQLite functions**: COALESCE, IFNULL, LENGTH, SUBSTR, REPLACE, ROUND
-
-### Input:
-Generate a SQL query that answers the question `{{user_question}}`.
-This query will run on a SQLite database whose schema is represented in this string:
-{table_metadata_string}
-
-### Response:
-Based on your instructions, here is the SQL query I have generated to answer the question `{{user_question}}`:
-```sql"""
-        
-        elif db_type == "postgresql":
-            return f"""### Instructions:
-Your task is to convert a question into a SQL query, given a PostgreSQL database schema.
-Adhere to these rules:
-- **Use PostgreSQL syntax** - leverage PostgreSQL-specific features when beneficial
-- **Use Table Aliases** to prevent ambiguity. For example, `SELECT c.name, o.total FROM customers c JOIN orders o ON c.id = o.customer_id`
-- **For LIMIT queries**, use PostgreSQL syntax: `LIMIT n` or `LIMIT n OFFSET m`
-- **For date/time**, use PostgreSQL functions like `NOW()`, `CURRENT_DATE`, `CURRENT_TIMESTAMP`
-- **For schema queries**, use `information_schema.tables` and `information_schema.columns`
-- When creating ratios, always cast the numerator as float: `column::FLOAT`
-- **Use double quotes for identifiers** and single quotes for strings
-- **PostgreSQL functions**: COALESCE, NULLIF, LENGTH, SUBSTRING, REPLACE, ROUND, STRING_AGG, ARRAY_AGG
-
-### Input:
-Generate a SQL query that answers the question `{{user_question}}`.
-This query will run on a PostgreSQL database whose schema is represented in this string:
-{table_metadata_string}
-
-### Response:
-Based on your instructions, here is the SQL query I have generated to answer the question `{{user_question}}`:
-```sql"""
-        
-        elif db_type == "mysql":
-            return f"""### Instructions:
-Your task is to convert a question into a SQL query, given a MySQL database schema.
-Adhere to these rules:
-- **Use MySQL syntax** - leverage MySQL-specific features when beneficial
-- **Use Table Aliases** to prevent ambiguity. For example, `SELECT c.name, o.total FROM customers c JOIN orders o ON c.id = o.customer_id`
-- **For LIMIT queries**, use MySQL syntax: `LIMIT n` or `LIMIT offset, count`
-- **For date/time**, use MySQL functions like `NOW()`, `CURDATE()`, `CURTIME()`
-- **For schema queries**, use `information_schema.tables` and `information_schema.columns`
-- When creating ratios, always cast the numerator as float: `CAST(column AS DECIMAL)`
-- **Use backticks for identifiers** and single quotes for strings
-- **MySQL functions**: COALESCE, IFNULL, LENGTH, SUBSTRING, REPLACE, ROUND, GROUP_CONCAT
-
-### Input:
-Generate a SQL query that answers the question `{{user_question}}`.
-This query will run on a MySQL database whose schema is represented in this string:
-{table_metadata_string}
-
-### Response:
-Based on your instructions, here is the SQL query I have generated to answer the question `{{user_question}}`:
-```sql"""
-        
-        else:
-            # Fallback to generic SQL
-            return f"""### Instructions:
-Your task is to convert a question into a SQL query, given a database schema.
-Adhere to these rules:
-- **Use standard SQL syntax** - avoid database-specific features
-- **Use Table Aliases** to prevent ambiguity. For example, `SELECT c.name, o.total FROM customers c JOIN orders o ON c.id = o.customer_id`
-- When creating ratios, always cast the numerator as float
-- **Use standard SQL functions**: COALESCE, LENGTH, SUBSTRING, REPLACE, ROUND
-
-### Input:
-Generate a SQL query that answers the question `{{user_question}}`.
-This query will run on a database whose schema is represented in this string:
-{table_metadata_string}
-
-### Response:
-Based on your instructions, here is the SQL query I have generated to answer the question `{{user_question}}`:
-```sql"""
-    
-    async def _validate_and_correct_sql(self, sql: str) -> str:
-        """Validate and correct SQL query."""
-        if not self.config.config.enable_query_validation:
-            return sql
-        
-        return await self.sql_validator.validate_and_correct(sql)
-    
     async def _execute_sql(self, sql: str, database_name: Optional[str] = None) -> Dict[str, Any]:
         """Execute SQL query against the database."""
         db_name = database_name or self.config.config.default_database
@@ -848,21 +408,27 @@ Based on your instructions, here is the SQL query I have generated to answer the
     
     def display_results(self, result: QueryResult) -> None:
         """Display query results in a formatted way."""
+        # Detect database type for proper labeling
+        db_type = self._detect_database_type()
+        query_label = "MQL" if db_type == "mongodb" else "SQL"
+
         # Display query information
         query_panel = Panel(
             f"[green]Original Query:[/green] {result.original_query}\n"
-            f"[blue]Generated SQL:[/blue] {result.generated_sql}\n"
+            f"[blue]Generated {query_label}:[/blue] {result.generated_sql}\n"
             f"[yellow]Execution Time:[/yellow] {result.execution_time:.2f}s",
             title="Query Information",
             border_style="blue"
         )
         self.console.print(query_panel)
-        
-        # Display SQL syntax highlighted
+
+        # Display query syntax highlighted
         if result.validated_sql:
-            sql_syntax = Syntax(result.validated_sql, "sql", theme="monokai", line_numbers=False)
-            sql_panel = Panel(sql_syntax, title="Final SQL Query", border_style="green")
-            self.console.print(sql_panel)
+            syntax_lang = "javascript" if db_type == "mongodb" else "sql"
+            syntax_title = f"Final {query_label} Query"
+            query_syntax = Syntax(result.validated_sql, syntax_lang, theme="monokai", line_numbers=False)
+            syntax_panel = Panel(query_syntax, title=syntax_title, border_style="green")
+            self.console.print(syntax_panel)
         
         # Display error if any
         if result.error:

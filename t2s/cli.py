@@ -173,13 +173,25 @@ class T2SCLI:
         self.console = Console()
         self.config = Config()
         self.engine = None
-        self.art = T2SArt()
-        
+
+        # Detect theme based on default database type
+        theme = self._detect_theme()
+        self.art = T2SArt(theme=theme)
+
         # Setup logging
         logging.basicConfig(
             level=logging.WARNING,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
+
+    def _detect_theme(self) -> str:
+        """Detect theme based on default database type."""
+        default_db = self.config.config.default_database
+        if default_db and default_db in self.config.config.databases:
+            db_config = self.config.config.databases[default_db]
+            if db_config.type.lower() == "mongodb":
+                return "mongodb"
+        return "sql"
     
     async def initialize(self):
         """Initialize the T2S engine."""
@@ -214,7 +226,7 @@ class T2SCLI:
                 self.console.print(self.art.get_compact_header())
                 
                 query = Prompt.ask(
-                    "\n[bold cyan]Enter your natural language query[/bold cyan] [dim](or 'q' to quit)[/dim]",
+                    f"\n[bold {self.art.colors['primary']}]Enter your natural language query[/bold {self.art.colors['primary']}] [dim](or 'q' to quit)[/dim]",
                     default="",
                     show_default=False
                 )
@@ -271,7 +283,7 @@ class T2SCLI:
         """Show configuration menu."""
         while True:
             self.console.clear()
-            self.console.print(Panel("T2S Configuration", style="bold bright_blue"))
+            self.console.print(Panel("T2S Configuration", style=f"bold {self.art.colors['primary']}"))
 
             choices = [
                 "Manage AI Models",
@@ -306,7 +318,7 @@ class T2SCLI:
         
         while True:
             self.console.clear()
-            self.console.print(Panel("AI Model Management", style="bold bright_cyan"))
+            self.console.print(Panel("AI Model Management", style=f"bold {self.art.colors['primary']}"))
             
             # Show current active model prominently
             current_model = self.config.config.selected_model
@@ -336,7 +348,7 @@ class T2SCLI:
             self.console.print()
 
             # Show local models
-            self.console.print("[bold cyan]Local Models:[/bold cyan]")
+            self.console.print(f"[bold {self.art.colors['primary']}]Local Models:[/bold {self.art.colors['primary']}]")
             models_info = await self.engine.get_available_models() if self.engine else {}
 
             if not models_info:
@@ -827,10 +839,12 @@ class T2SCLI:
     async def database_management_menu(self):
         """Database management interface."""
         db_manager = DatabaseManager(self.config)
-        
+
         while True:
-            self.console.clear()
-            self.console.print(Panel("Database Management", style="bold bright_blue"))
+            # Clear screen more reliably using ANSI codes
+            import os
+            os.system('clear' if os.name != 'nt' else 'cls')
+            self.console.print(Panel("Database Management", style=f"bold {self.art.colors['primary']}"))
             
             # Show configured databases
             databases = db_manager.list_databases()
@@ -853,23 +867,26 @@ class T2SCLI:
             
             choices = [
                 "Add Database",
+                "Discover MongoDB Databases",
                 "Set Default Database",
                 "Refresh Connection Status",
                 "Remove Database",
                 "Back"
             ]
-            
+
             choice = simple_select("What would you like to do?", choices)
-            
+
             if choice == choices[0]:  # Add
                 await self.add_database_wizard(db_manager)
-            elif choice == choices[1]:  # Set Default
+            elif choice == choices[1]:  # Discover MongoDB
+                await self.discover_mongodb_wizard(db_manager)
+            elif choice == choices[2]:  # Set Default
                 await self.set_default_database_wizard()
-            elif choice == choices[2]:  # Refresh
+            elif choice == choices[3]:  # Refresh
                 await db_manager.initialize()
                 self.console.print(self.art.get_status_indicator("success", "Connection status refreshed"))
                 input("Press Enter to continue...")
-            elif choice == choices[3]:  # Remove
+            elif choice == choices[4]:  # Remove
                 await self.remove_database_wizard(db_manager)
             else:  # Back
                 break
@@ -969,13 +986,87 @@ class T2SCLI:
         
         if Confirm.ask(f"Are you sure you want to remove {db_choice}?"):
             await db_manager.remove_database(db_choice)
-        
+
         input("Press Enter to continue...")
-    
+
+    async def discover_mongodb_wizard(self, db_manager: DatabaseManager):
+        """Discover and connect to MongoDB databases."""
+        self.console.clear()
+        self.console.print(f"[bold {self.art.colors['primary']}]Discovering MongoDB Instances...[/bold {self.art.colors['primary']}]\n")
+
+        # Discover local MongoDB instances
+        mongo_manager = db_manager.mongodb_manager
+        discovered = mongo_manager.discover_local_mongodb()
+
+        if not discovered:
+            self.console.print(self.art.get_status_indicator("warning", "No MongoDB instances found on localhost"))
+            self.console.print("\n[dim]Make sure MongoDB is running on standard ports (27017-27019)[/dim]")
+            input("\nPress Enter to continue...")
+            return
+
+        # Show discovered instances
+        self.console.print(f"[bold green]Found {len(discovered)} MongoDB instance(s):[/bold green]\n")
+
+        for i, instance in enumerate(discovered, 1):
+            self.console.print(f"[bold cyan]{i}. MongoDB at {instance['host']}:{instance['port']}[/bold cyan]")
+            self.console.print(f"   Version: {instance['version']}")
+            self.console.print(f"   Databases: {instance['database_count']}")
+            self.console.print(f"   [dim]Available: {', '.join(instance['databases'][:5])}{'...' if len(instance['databases']) > 5 else ''}[/dim]\n")
+
+        # Select instance
+        instance_choices = [f"{inst['host']}:{inst['port']}" for inst in discovered]
+        instance_choices.append("Cancel")
+
+        selected = simple_select("Select MongoDB instance to connect:", instance_choices)
+
+        if selected == "Cancel":
+            return
+
+        # Find selected instance
+        selected_instance = next((inst for inst in discovered if f"{inst['host']}:{inst['port']}" == selected), None)
+
+        if not selected_instance:
+            return
+
+        # Show databases and let user select
+        self.console.print(f"\n[bold {self.art.colors['primary']}]Available Databases:[/bold {self.art.colors['primary']}]")
+        for db in selected_instance['databases']:
+            self.console.print(f"  - {db}")
+
+        self.console.print()
+
+        # Ask which database to connect to
+        db_choices = selected_instance['databases'] + ["Cancel"]
+        selected_db = simple_select("Select database to connect:", db_choices)
+
+        if selected_db == "Cancel":
+            return
+
+        # Ask for a reference name
+        default_name = selected_db.replace("_", "-")
+        db_name = input(f"\nDatabase name (for reference) [default: {default_name}]: ").strip() or default_name
+
+        # Add the database
+        success = await db_manager.add_database(
+            db_name,
+            "mongodb",
+            host=selected_instance['host'],
+            port=selected_instance['port'],
+            database=selected_db,
+            username=None,
+            password=None
+        )
+
+        if success and not self.config.config.default_database:
+            if Confirm.ask("Set this as the default database?"):
+                self.config.set_default_database(db_name)
+
+        input("\nPress Enter to continue...")
+
     async def huggingface_auth_menu(self):
         """HuggingFace authentication menu."""
         self.console.clear()
-        self.console.print(Panel("HuggingFace Authentication", style="bold bright_yellow"))
+        self.console.print(Panel("HuggingFace Authentication", style=f"bold {self.art.colors['highlight']}"))
         
         model_manager = ModelManager(self.config)
         
@@ -1019,7 +1110,7 @@ class T2SCLI:
     async def external_api_keys_menu(self):
         """External API keys management menu."""
         self.console.clear()
-        self.console.print(Panel("External API Keys Management", style="bold bright_magenta"))
+        self.console.print(Panel("External API Keys Management", style=f"bold {self.art.colors['primary']}"))
 
         # Show current API key status
         providers = {
@@ -1164,7 +1255,7 @@ class T2SCLI:
     async def general_settings_menu(self):
         """General settings menu."""
         self.console.clear()
-        self.console.print(Panel("General Settings", style="bold bright_green"))
+        self.console.print(Panel("General Settings", style=f"bold {self.art.colors['primary']}"))
         
         current_config = self.config.config
         
@@ -1209,7 +1300,7 @@ class T2SCLI:
     async def show_system_info(self):
         """Show system information."""
         self.console.clear()
-        self.console.print(Panel("System Information", style="bold bright_magenta"))
+        self.console.print(Panel("System Information", style=f"bold {self.art.colors['primary']}"))
         
         sys_info = self.config.get_system_info()
         

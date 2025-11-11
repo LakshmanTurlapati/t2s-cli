@@ -18,6 +18,11 @@ class MQLValidator:
             'deleteOne', 'deleteMany', 'replaceOne'
         ]
 
+        self.direct_db_operations = [
+            'getCollectionNames', 'listCollections', 'getCollectionInfos',
+            'adminCommand', 'runCommand', 'stats'
+        ]
+
         self.valid_operators = [
             '$eq', '$ne', '$gt', '$gte', '$lt', '$lte',
             '$in', '$nin', '$and', '$or', '$not', '$nor',
@@ -36,16 +41,23 @@ class MQLValidator:
 
         mql = mql.strip()
 
+        # Remove trailing semicolons (MongoDB doesn't use them)
+        mql = mql.rstrip(';').strip()
+
         # Basic validation
         if not mql.startswith('db.'):
             self.logger.warning(f"MQL query does not start with 'db.': {mql}")
             raise ValueError("Invalid MQL query format: must start with 'db.'")
 
-        # Check for valid operation
+        # Check for valid collection operation
         has_valid_operation = any(f'.{op}(' in mql for op in self.valid_operations)
-        if not has_valid_operation:
+
+        # Check for valid direct DB operation
+        has_direct_operation = any(re.match(rf'^db\.{op}\s*\(', mql) for op in self.direct_db_operations)
+
+        if not has_valid_operation and not has_direct_operation:
             self.logger.warning(f"MQL query does not contain a valid operation: {mql}")
-            raise ValueError(f"Invalid MQL operation. Valid operations: {', '.join(self.valid_operations)}")
+            raise ValueError(f"Invalid MQL operation. Valid operations: {', '.join(self.valid_operations + self.direct_db_operations)}")
 
         # Basic syntax checks
         if not self._check_balanced_brackets(mql):
@@ -80,7 +92,21 @@ class MQLValidator:
 
     def _validate_query_structure(self, mql: str) -> None:
         """Validate the structure of the MQL query."""
-        # Extract collection name
+        # Check if this is a direct DB operation (no collection)
+        is_direct_db_op = any(re.match(rf'^db\.{op}\s*\(', mql) for op in self.direct_db_operations)
+
+        if is_direct_db_op:
+            # For direct DB operations, just validate the operation exists
+            operation_match = re.search(r'^db\.(\w+)\(', mql)
+            if not operation_match:
+                raise ValueError("Cannot extract direct DB operation")
+
+            operation = operation_match.group(1)
+            if operation not in self.direct_db_operations:
+                raise ValueError(f"Invalid direct DB operation: {operation}")
+            return  # Skip collection-based validation
+
+        # Extract collection name (for collection-based operations)
         collection_match = re.search(r'db\.(\w+)\.', mql)
         if not collection_match:
             raise ValueError("Cannot extract collection name")
