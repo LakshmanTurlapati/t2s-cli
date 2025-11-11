@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "t2s-cli"
-version = "0.3.0"
+version = "0.3.1"
 description = "Terminal-based Text-to-SQL and Text-to-MQL converter with local and cloud AI model integration"
 authors = [
     {email = "lakshmanturlapati@gmail.com"},
