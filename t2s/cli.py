@@ -24,7 +24,7 @@ from .ui.ascii_art import T2SArt
 from . import __version__  # Import version from package
 
 
-def simple_select(title: str, choices: list, default_index: int = 0) -> str:
+async def simple_select(title: str, choices: list, default_index: int = 0) -> str:
     """Interactive selection menu with arrow key navigation (cross-platform).
 
     Uses questionary for cross-platform terminal handling.
@@ -38,11 +38,11 @@ def simple_select(title: str, choices: list, default_index: int = 0) -> str:
         Selected choice as string
     """
     try:
-        result = questionary.select(
+        result = await questionary.select(
             title,
             choices=choices,
             default=choices[default_index] if 0 <= default_index < len(choices) else None
-        ).ask()
+        ).ask_async()
 
         # If user cancels (Ctrl+C), use default
         if result is None:
@@ -184,7 +184,7 @@ class T2SCLI:
                 "Back to Main Menu"
             ]
 
-            choice = simple_select("What would you like to configure?", choices)
+            choice = await simple_select("What would you like to configure?", choices)
 
             if choice == choices[0]:  # Models
                 await self.model_management_menu()
@@ -316,7 +316,7 @@ class T2SCLI:
                 "Back"
             ]
             
-            choice = simple_select("What would you like to do?", choices)
+            choice = await simple_select("What would you like to do?", choices)
             
             if choice == choices[0]:  # Download
                 await self.download_model_wizard(model_manager)
@@ -345,7 +345,7 @@ class T2SCLI:
         model_choices = [display_name for _, _, _, display_name in all_models]
         model_choices.append("Cancel")
         
-        model_choice = simple_select("Which model would you like to download?", model_choices)
+        model_choice = await simple_select("Which model would you like to download?", model_choices)
         
         if model_choice == "Cancel":
             return
@@ -455,7 +455,7 @@ class T2SCLI:
                         "Skip this model"
                     ]
                     
-                    auth_choice = simple_select("What would you like to do?", auth_choices)
+                    auth_choice = await simple_select("What would you like to do?", auth_choices)
                     
                     if auth_choice == auth_choices[0]:  # Login and retry
                         if await self._quick_huggingface_auth(model_manager):
@@ -493,7 +493,7 @@ class T2SCLI:
                 # Generic error
                 self.console.print(self.art.get_status_indicator("error", f"Failed to download {model_config.name}: {last_error}"))
                 if attempt < max_retries - 1:
-                    retry_choice = simple_select("What would you like to do?", ["Retry", "Skip this model"])
+                    retry_choice = await simple_select("What would you like to do?", ["Retry", "Skip this model"])
                     if retry_choice == "Retry":
                         continue
                 break
@@ -648,7 +648,7 @@ class T2SCLI:
         display_choices = [choice_text for choice_text, _ in model_choices]
         display_choices.append("Cancel")
         
-        selected_choice = simple_select("Which model would you like to set as active?", display_choices)
+        selected_choice = await simple_select("Which model would you like to set as active?", display_choices)
 
         if selected_choice == "Cancel":
             return
@@ -696,7 +696,7 @@ class T2SCLI:
         model_choices = [f"{name} ({model_id})" for model_id, name in downloaded_models]
         model_choices.append("Cancel")
         
-        model_choice = simple_select("Which model would you like to delete?", model_choices)
+        model_choice = await simple_select("Which model would you like to delete?", model_choices)
         
         if model_choice == "Cancel":
             return
@@ -763,7 +763,7 @@ class T2SCLI:
                 "Back"
             ]
 
-            choice = simple_select("What would you like to do?", choices)
+            choice = await simple_select("What would you like to do?", choices)
 
             if choice == choices[0]:  # Add
                 await self.add_database_wizard(db_manager)
@@ -783,7 +783,7 @@ class T2SCLI:
     async def add_database_wizard(self, db_manager: DatabaseManager):
         """Guide user through adding a database."""
         db_choices = ["SQLite", "PostgreSQL", "MySQL", "MongoDB", "Cancel"]
-        db_type = simple_select("What type of database?", db_choices)
+        db_type = await simple_select("What type of database?", db_choices)
         
         if db_type == "Cancel":
             return
@@ -850,7 +850,7 @@ class T2SCLI:
             return
         
         db_choices = databases + ["Cancel"]
-        db_choice = simple_select("Which database should be the default?", db_choices)
+        db_choice = await simple_select("Which database should be the default?", db_choices)
         
         if db_choice != "Cancel":
             self.config.set_default_database(db_choice)
@@ -868,7 +868,7 @@ class T2SCLI:
             return
         
         db_choices = databases + ["Cancel"]
-        db_choice = simple_select("Which database would you like to remove?", db_choices)
+        db_choice = await simple_select("Which database would you like to remove?", db_choices)
         
         if db_choice == "Cancel":
             return
@@ -906,7 +906,7 @@ class T2SCLI:
         instance_choices = [f"{inst['host']}:{inst['port']}" for inst in discovered]
         instance_choices.append("Cancel")
 
-        selected = simple_select("Select MongoDB instance to connect:", instance_choices)
+        selected = await simple_select("Select MongoDB instance to connect:", instance_choices)
 
         if selected == "Cancel":
             return
@@ -926,7 +926,7 @@ class T2SCLI:
 
         # Ask which database to connect to
         db_choices = selected_instance['databases'] + ["Cancel"]
-        selected_db = simple_select("Select database to connect:", db_choices)
+        selected_db = await simple_select("Select database to connect:", db_choices)
 
         if selected_db == "Cancel":
             return
@@ -976,7 +976,7 @@ class T2SCLI:
             "Back"
         ]
         
-        choice = simple_select("What would you like to do?", choices)
+        choice = await simple_select("What would you like to do?", choices)
         
         if choice == choices[0]:  # Set token
             token = input("Enter your HuggingFace token: ").strip()
@@ -1030,7 +1030,7 @@ class T2SCLI:
             "Back"
         ]
 
-        choice = simple_select("What would you like to do?", choices)
+        choice = await simple_select("What would you like to do?", choices)
 
         if choice == choices[0]:  # Anthropic
             await self._set_api_key_wizard("anthropic", "Anthropic", "https://console.anthropic.com/")
@@ -1091,7 +1091,7 @@ class T2SCLI:
         choices = [name for _, name in configured]
         choices.append("Cancel")
 
-        choice = simple_select("Which API key would you like to remove?", choices)
+        choice = await simple_select("Which API key would you like to remove?", choices)
 
         if choice == "Cancel":
             return
@@ -1122,7 +1122,7 @@ class T2SCLI:
         choices = [name for _, name in configured]
         choices.append("Cancel")
 
-        choice = simple_select("Which API key would you like to test?", choices)
+        choice = await simple_select("Which API key would you like to test?", choices)
 
         if choice == "Cancel":
             return
@@ -1247,7 +1247,7 @@ class T2SCLI:
         
         model_choices.append("Skip for now")
         
-        model_choice = simple_select("Which model would you like to download?", model_choices)
+        model_choice = await simple_select("Which model would you like to download?", model_choices)
         
         if model_choice == "Skip for now":
             return
@@ -1300,7 +1300,7 @@ class T2SCLI:
                 self.console.print(f"  • {db_name} ({db_config.type})")
             
             db_choices = databases + ["Add a new database", "Skip for now"]
-            db_choice = simple_select("Which database would you like to use as default?", db_choices)
+            db_choice = await simple_select("Which database would you like to use as default?", db_choices)
             
             if db_choice in databases:
                 self.config.set_default_database(db_choice)
